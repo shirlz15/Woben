@@ -1,0 +1,6 @@
+/**
+ * FORENSIGHT — CSS Entry Point
+ * Import order matters: tokens first, then components.
+ */
+@import url('./styles/design-tokens.css');
+@import url('./styles/components.css');

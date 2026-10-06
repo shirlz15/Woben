@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pulse — Your Feed</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23111'/%3E%3Ccircle cx='16' cy='16' r='8' fill='%23e11d48'/%3E%3C/svg%3E" />
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+    html { font-size: 16px; -webkit-font-smoothing: antialiased; }
+    body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #fafafa; color: #18181b; min-height: 100vh; }
+
+    /* ─── TOP NAV ─────────────────────────────────────── */
+    .topnav {
+      position: sticky; top: 0; z-index: 100;
+      display: flex; align-items: center; justify-content: space-between;
+      height: 56px; padding: 0 24px;
+      background: #fff; border-bottom: 1px solid #e5e7eb;
+    }
+    .topnav-left { display: flex; align-items: center; gap: 24px; }
+    .topnav-logo {
+      display: flex; align-items: center; gap: 8px;
+      font-weight: 800; font-size: 20px; color: #18181b; letter-spacing: -0.02em;
+      text-decoration: none;
+    }
+    .topnav-logo-icon {
+      width: 28px; height: 28px; border-radius: 7px; background: #18181b;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .topnav-logo-dot { width: 10px; height: 10px; border-radius: 50%; background: #e11d48; }
+    .topnav-search {
+      width: 260px; height: 36px; padding: 0 14px;
+      border: 1px solid #e5e7eb; border-radius: 20px; background: #f4f4f5;
+      font-family: inherit; font-size: 13px; color: #52525b; outline: none;
+    }
+    .topnav-search:focus { border-color: #a1a1aa; background: #fff; }
+    .topnav-search::placeholder { color: #a1a1aa; }
+    .topnav-right { display: flex; align-items: center; gap: 8px; }
+    .topnav-btn {
+      height: 36px; padding: 0 14px; border: none; border-radius: 8px;
+      font-family: inherit; font-size: 13px; font-weight: 500; cursor: pointer;
+      display: flex; align-items: center; gap: 6px; transition: background .15s;
+    }
+    .topnav-btn.ghost { background: none; color: #52525b; }
+    .topnav-btn.ghost:hover { background: #f4f4f5; }
+    .topnav-btn.ghost.active { color: #18181b; font-weight: 600; }
+    .topnav-avatar {
+      width: 32px; height: 32px; border-radius: 50%;
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      display: flex; align-items: center; justify-content: center;
+      color: #fff; font-weight: 700; font-size: 13px; cursor: pointer;
+    }
+
+    /* ─── LAYOUT ──────────────────────────────────────── */
+    .layout { max-width: 1100px; margin: 0 auto; display: flex; gap: 24px; padding: 24px; }
+    .sidebar { width: 220px; flex-shrink: 0; position: sticky; top: 80px; align-self: flex-start; }
+    .feed { flex: 1; min-width: 0; max-width: 600px; }
+    .right-panel { width: 260px; flex-shrink: 0; position: sticky; top: 80px; align-self: flex-start; }
+
+    @media (max-width: 1024px) { .sidebar, .right-panel { display: none; } .feed { max-width: 100%; } }
+
+    /* ─── SIDEBAR ─────────────────────────────────────── */
+    .sidebar-nav { display: flex; flex-direction: column; gap: 2px; }
+    .sidebar-link {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 14px; border-radius: 10px;
+      font-size: 14px; font-weight: 500; color: #52525b;
+      text-decoration: none; transition: all .12s;
+    }
+    .sidebar-link:hover { background: #f4f4f5; color: #18181b; }
+    .sidebar-link.active { background: #18181b; color: #fff; }
+    .sidebar-icon { font-size: 18px; width: 24px; text-align: center; }
+
+    .sidebar-section { margin-top: 20px; padding-top: 16px; border-top: 1px solid #e5e7eb; }
+    .sidebar-section-title {
+      font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
+      text-transform: uppercase; color: #a1a1aa; padding: 0 14px; margin-bottom: 8px;
+    }
+    .sidebar-profile {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 14px; border-radius: 10px;
+    }
+    .sidebar-profile-avatar {
+      width: 36px; height: 36px; border-radius: 50%;
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      display: flex; align-items: center; justify-content: center;
+      color: #fff; font-weight: 700; font-size: 14px;
+    }
+    .sidebar-profile-name { font-weight: 600; font-size: 14px; }
+    .sidebar-profile-handle { font-size: 12px; color: #a1a1aa; }
+
+    /* ─── POST CARD ───────────────────────────────────── */
+    .post {
+      background: #fff; border-radius: 16px; overflow: hidden;
+      border: 1px solid #e5e7eb; margin-bottom: 16px;
+      transition: box-shadow .15s;
+    }
+    .post:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
+    .post-head {
+      display: flex; align-items: center; gap: 10px;
+      padding: 14px 18px;
+    }
+    .post-avatar {
+      width: 40px; height: 40px; border-radius: 50%; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      color: #fff; font-weight: 700; font-size: 15px;
+    }
+    .post-meta { flex: 1; min-width: 0; }
+    .post-name {
+      font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 4px;
+    }
+    .post-verified {
+      display: inline-flex; width: 15px; height: 15px; border-radius: 50%;
+      background: #3b82f6; align-items: center; justify-content: center;
+      font-size: 9px; color: #fff;
+    }
+    .post-time { font-size: 12px; color: #a1a1aa; }
+    .post-more {
+      width: 32px; height: 32px; border-radius: 50%; border: none;
+      background: none; cursor: pointer; font-size: 18px; color: #a1a1aa;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .post-more:hover { background: #f4f4f5; }
+    .post-body { padding: 0 18px 12px; }
+    .post-text { font-size: 14px; line-height: 1.6; color: #3f3f46; }
+    .post-text a { color: #3b82f6; text-decoration: none; }
+
+    /* Media containers */
+    .post-media {
+      position: relative; background: #f4f4f5; overflow: hidden; cursor: pointer;
+    }
+    .post-media img {
+      width: 100%; display: block; object-fit: cover;
+      transition: transform .2s;
+    }
+    .post-media:hover img { transform: scale(1.01); }
+    .post-media video {
+      width: 100%; display: block; background: #000;
+    }
+
+    .post-audio {
+      padding: 16px 18px;
+      background: linear-gradient(135deg, #1e1b4b 0%, #312e81 100%);
+      border-radius: 0;
+    }
+    .post-audio audio { width: 100%; height: 36px; }
+    .post-audio-label { color: rgba(255,255,255,0.5); font-size: 11px; margin-top: 8px; }
+
+    .post-actions {
+      display: flex; align-items: center; gap: 4px;
+      padding: 8px 14px; border-top: 1px solid #f4f4f5;
+    }
+    .post-action-btn {
+      display: flex; align-items: center; gap: 5px;
+      padding: 8px 12px; border: none; border-radius: 8px;
+      background: none; font-family: inherit; font-size: 13px;
+      color: #71717a; cursor: pointer; transition: all .12s;
+    }
+    .post-action-btn:hover { background: #f4f4f5; color: #18181b; }
+    .post-action-btn .icon { font-size: 16px; }
+    .post-action-btn.liked { color: #e11d48; }
+    .post-action-btn.liked .icon { color: #e11d48; }
+
+    /* ─── RIGHT PANEL ─────────────────────────────────── */
+    .rp-card {
+      background: #fff; border: 1px solid #e5e7eb; border-radius: 14px;
+      padding: 16px; margin-bottom: 16px;
+    }
+    .rp-title {
+      font-size: 14px; font-weight: 700; margin-bottom: 10px;
+    }
+    .rp-trend {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 0; cursor: pointer;
+    }
+    .rp-trend:hover .rp-trend-topic { color: #18181b; }
+    .rp-trend-num { font-size: 11px; font-weight: 600; color: #a1a1aa; min-width: 18px; }
+    .rp-trend-topic { font-size: 13px; font-weight: 600; color: #3f3f46; transition: color .1s; }
+    .rp-trend-posts { font-size: 11px; color: #a1a1aa; }
+
+    .rp-suggested-user {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 0;
+    }
+    .rp-suggested-avatar {
+      width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      color: #fff; font-weight: 700; font-size: 13px;
+    }
+    .rp-suggested-name { font-size: 13px; font-weight: 600; }
+    .rp-suggested-handle { font-size: 11px; color: #a1a1aa; }
+    .rp-follow-btn {
+      margin-left: auto; padding: 5px 14px; border-radius: 20px;
+      border: 1px solid #e5e7eb; background: #fff; font-family: inherit;
+      font-size: 12px; font-weight: 600; cursor: pointer;
+    }
+    .rp-follow-btn:hover { background: #f4f4f5; }
+    .rp-footer { font-size: 11px; color: #d4d4d8; margin-top: 16px; line-height: 1.6; }
+
+    /* ─── MEDIA OVERLAY ON HOVER ──────────────────────── */
+    .post-media-overlay {
+      position: absolute; inset: 0; background: rgba(0,0,0,0);
+      transition: background .2s; pointer-events: none;
+    }
+    .post-media:hover .post-media-overlay { background: rgba(0,0,0,0.03); }
+  </style>
+</head>
+<body>
+
+<!-- ─── TOP NAV ─────────────────────────────────────── -->
+<nav class="topnav">
+  <div class="topnav-left">
+    <a href="#" class="topnav-logo">
+      <div class="topnav-logo-icon"><div class="topnav-logo-dot"></div></div>
+      Pulse
+    </a>
+    <input type="text" class="topnav-search" placeholder="Search Pulse..." />
+  </div>
+  <div class="topnav-right">
+    <button class="topnav-btn ghost active">🏠 Home</button>
+    <button class="topnav-btn ghost">🔍 Explore</button>
+    <button class="topnav-btn ghost">🔔 3</button>
+    <button class="topnav-btn ghost">✉️</button>
+    <div class="topnav-avatar">Y</div>
+  </div>
+</nav>
+
+<!-- ─── LAYOUT ──────────────────────────────────────── -->
+<div class="layout">
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar">
+    <div class="sidebar-profile">
+      <div class="sidebar-profile-avatar">Y</div>
+      <div>
+        <div class="sidebar-profile-name">You</div>
+        <div class="sidebar-profile-handle">@yourhandle</div>
+      </div>
+    </div>
+    <nav class="sidebar-nav" style="margin-top:16px">
+      <a href="#" class="sidebar-link active"><span class="sidebar-icon">🏠</span> Feed</a>
+      <a href="#" class="sidebar-link"><span class="sidebar-icon">🔍</span> Explore</a>
+      <a href="#" class="sidebar-link"><span class="sidebar-icon">🔔</span> Notifications</a>
+      <a href="#" class="sidebar-link"><span class="sidebar-icon">💬</span> Messages</a>
+      <a href="#" class="sidebar-link"><span class="sidebar-icon">🔖</span> Saved</a>
+      <a href="#" class="sidebar-link"><span class="sidebar-icon">⚙️</span> Settings</a>
+    </nav>
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">Following</div>
+      <a href="#" class="sidebar-link"><span class="sidebar-icon">📰</span> News Today</a>
+      <a href="#" class="sidebar-link"><span class="sidebar-icon">📸</span> Photography</a>
+      <a href="#" class="sidebar-link"><span class="sidebar-icon">🎵</span> Music</a>
+      <a href="#" class="sidebar-link"><span class="sidebar-icon">🎮</span> Gaming</a>
+    </div>
+  </aside>
+
+  <!-- FEED -->
+  <main class="feed">
+
+
+    <article class="post">
+      <div class="post-head">
+        <div class="post-avatar" style="background:linear-gradient(135deg,#0ea5e9,#06b6d4)">S</div>
+        <div class="post-meta">
+          <div class="post-name">Sarah Chen <span class="post-verified">✓</span></div>
+          <div class="post-time">2h · Public</div>
+        </div>
+        <button class="post-more">⋯</button>
+      </div>
+      <div class="post-body">
+        <p class="post-text">Caught this incredible sunset on my evening walk. No filter needed when nature does the work ✨🌅</p>
+      </div>
+      <div class="post-media">
+        <img src="https://picsum.photos/seed/pulse-sunset-auth/640/480" alt="Sunset over rolling hills" crossorigin="anonymous" loading="lazy" />
+        <div class="post-media-overlay"></div>
+      </div>
+      <div class="post-actions">
+        <button class="post-action-btn liked"><span class="icon">♥</span> 1,247</button>
+        <button class="post-action-btn"><span class="icon">💬</span> 83</button>
+        <button class="post-action-btn"><span class="icon">↗</span> Share</button>
+        <button class="post-action-btn" style="margin-left:auto"><span class="icon">🔖</span></button>
+      </div>
+    </article>
+
+
+    <article class="post">
+      <div class="post-head">
+        <div class="post-avatar" style="background:linear-gradient(135deg,#f97316,#ef4444)">M</div>
+        <div class="post-meta">
+          <div class="post-name">Marcus Williams</div>
+          <div class="post-time">4h · Public</div>
+        </div>
+        <button class="post-more">⋯</button>
+      </div>
+      <div class="post-body">
+        <p class="post-text">This photo has been circulating online. Can anyone confirm if this is real? 🤔 <a href="#">#FactCheck</a></p>
+      </div>
+      <div class="post-media">
+        <img src="https://picsum.photos/seed/pulse-manip-img/640/420" alt="Controversial photo shared online" crossorigin="anonymous" loading="lazy" />
+        <div class="post-media-overlay"></div>
+      </div>
+      <div class="post-actions">
+        <button class="post-action-btn"><span class="icon">♡</span> 456</button>
+        <button class="post-action-btn"><span class="icon">💬</span> 192</button>
+        <button class="post-action-btn"><span class="icon">↗</span> Share</button>
+        <button class="post-action-btn" style="margin-left:auto"><span class="icon">🔖</span></button>
+      </div>
+    </article>
+
+
+    <article class="post">
+      <div class="post-head">
+        <div class="post-avatar" style="background:linear-gradient(135deg,#8b5cf6,#6366f1)">R</div>
+        <div class="post-meta">
+          <div class="post-name">Rachel Nguyen <span class="post-verified">✓</span></div>
+          <div class="post-time">6h · Public</div>
+        </div>
+        <button class="post-more">⋯</button>
+      </div>
+      <div class="post-body">
+        <p class="post-text">Finally received my certification! Hard work pays off 🎓🎉 Thanks to everyone who supported me along the way.</p>
+      </div>
+      <div class="post-media">
+        <img src="https://picsum.photos/seed/pulse-certificate/640/450" alt="Professional certification document" crossorigin="anonymous" loading="lazy" />
+        <div class="post-media-overlay"></div>
+      </div>
+      <div class="post-actions">
+        <button class="post-action-btn liked"><span class="icon">♥</span> 892</button>
+        <button class="post-action-btn"><span class="icon">💬</span> 47</button>
+        <button class="post-action-btn"><span class="icon">↗</span> Share</button>
+        <button class="post-action-btn" style="margin-left:auto"><span class="icon">🔖</span></button>
+      </div>
+    </article>
+
+
+    <article class="post">
+      <div class="post-head">
+        <div class="post-avatar" style="background:linear-gradient(135deg,#ec4899,#f43f5e)">N</div>
+        <div class="post-meta">
+          <div class="post-name">News Today <span class="post-verified">✓</span></div>
+          <div class="post-time">8h · Public</div>
+        </div>
+        <button class="post-more">⋯</button>
+      </div>
+      <div class="post-body">
+        <p class="post-text">BREAKING: Leaked video allegedly shows CEO making controversial statement. Watch and decide for yourself. <a href="#">#Trending</a> <a href="#">#BreakingNews</a></p>
+      </div>
+      <div class="post-media">
+        <video controls preload="metadata" poster="https://picsum.photos/seed/pulse-newsclip/640/360">
+          <source src="https://www.w3schools.com/html/mov_bbb.mp4" type="video/mp4">
+        </video>
+      </div>
+      <div class="post-actions">
+        <button class="post-action-btn"><span class="icon">♡</span> 3,421</button>
+        <button class="post-action-btn"><span class="icon">💬</span> 1.2K</button>
+        <button class="post-action-btn"><span class="icon">↗</span> Share</button>
+        <button class="post-action-btn" style="margin-left:auto"><span class="icon">🔖</span></button>
+      </div>
+    </article>
+
+
+    <article class="post">
+      <div class="post-head">
+        <div class="post-avatar" style="background:linear-gradient(135deg,#22c55e,#16a34a)">J</div>
+        <div class="post-meta">
+          <div class="post-name">James Park</div>
+          <div class="post-time">12h · Friends</div>
+        </div>
+        <button class="post-more">⋯</button>
+      </div>
+      <div class="post-body">
+        <p class="post-text">Quick clip from the concert last night 🎸 The energy was unreal!</p>
+      </div>
+      <div class="post-media">
+        <video controls preload="metadata" poster="https://picsum.photos/seed/pulse-concert/640/360">
+          <source src="https://www.w3schools.com/html/movie.mp4" type="video/mp4">
+        </video>
+      </div>
+      <div class="post-actions">
+        <button class="post-action-btn liked"><span class="icon">♥</span> 734</button>
+        <button class="post-action-btn"><span class="icon">💬</span> 56</button>
+        <button class="post-action-btn"><span class="icon">↗</span> Share</button>
+        <button class="post-action-btn" style="margin-left:auto"><span class="icon">🔖</span></button>
+      </div>
+    </article>
+
+
+    <article class="post">
+      <div class="post-head">
+        <div class="post-avatar" style="background:linear-gradient(135deg,#a855f7,#7c3aed)">L</div>
+        <div class="post-meta">
+          <div class="post-name">Leaks & Rumors</div>
+          <div class="post-time">1d · Public</div>
+        </div>
+        <button class="post-more">⋯</button>
+      </div>
+      <div class="post-body">
+        <p class="post-text">This voice recording is making rounds on the internet. Allegedly from a private call between two executives. Thoughts? 🎙️👀</p>
+      </div>
+      <div class="post-audio">
+        <audio controls preload="metadata">
+          <source src="https://www.w3schools.com/html/horse.mp3" type="audio/mpeg">
+        </audio>
+        <div class="post-audio-label">Audio Clip · 0:02</div>
+      </div>
+      <div class="post-actions">
+        <button class="post-action-btn"><span class="icon">♡</span> 2,156</button>
+        <button class="post-action-btn"><span class="icon">💬</span> 487</button>
+        <button class="post-action-btn"><span class="icon">↗</span> Share</button>
+        <button class="post-action-btn" style="margin-left:auto"><span class="icon">🔖</span></button>
+      </div>
+    </article>
+
+
+    <article class="post">
+      <div class="post-head">
+        <div class="post-avatar" style="background:linear-gradient(135deg,#f59e0b,#eab308)">A</div>
+        <div class="post-meta">
+          <div class="post-name">Aisha Thompson</div>
+          <div class="post-time">1d · Public</div>
+        </div>
+        <button class="post-more">⋯</button>
+      </div>
+      <div class="post-body">
+        <p class="post-text">Sunday brunch done right 🍳🥑 This place never disappoints.</p>
+      </div>
+      <div class="post-media">
+        <img src="https://picsum.photos/seed/pulse-food-auth/640/480" alt="Brunch plate at a restaurant" crossorigin="anonymous" loading="lazy" />
+        <div class="post-media-overlay"></div>
+      </div>
+      <div class="post-actions">
+        <button class="post-action-btn liked"><span class="icon">♥</span> 324</button>
+        <button class="post-action-btn"><span class="icon">💬</span> 28</button>
+        <button class="post-action-btn"><span class="icon">↗</span> Share</button>
+        <button class="post-action-btn" style="margin-left:auto"><span class="icon">🔖</span></button>
+      </div>
+    </article>
+
+  </main>
+
+  <!-- RIGHT PANEL -->
+  <aside class="right-panel">
+    <div class="rp-card">
+      <div class="rp-title">Trending</div>
+      <div class="rp-trend"><span class="rp-trend-num">1</span><div><div class="rp-trend-topic">#FactCheck</div><div class="rp-trend-posts">12.4K posts</div></div></div>
+      <div class="rp-trend"><span class="rp-trend-num">2</span><div><div class="rp-trend-topic">#BreakingNews</div><div class="rp-trend-posts">8.2K posts</div></div></div>
+      <div class="rp-trend"><span class="rp-trend-num">3</span><div><div class="rp-trend-topic">#AIArt</div><div class="rp-trend-posts">5.6K posts</div></div></div>
+      <div class="rp-trend"><span class="rp-trend-num">4</span><div><div class="rp-trend-topic">#Photography</div><div class="rp-trend-posts">3.1K posts</div></div></div>
+      <div class="rp-trend"><span class="rp-trend-num">5</span><div><div class="rp-trend-topic">#Deepfake</div><div class="rp-trend-posts">2.8K posts</div></div></div>
+    </div>
+
+    <div class="rp-card">
+      <div class="rp-title">Suggested for You</div>
+      <div class="rp-suggested-user">
+        <div class="rp-suggested-avatar" style="background:linear-gradient(135deg,#10b981,#059669)">T</div>
+        <div><div class="rp-suggested-name">TechInsider</div><div class="rp-suggested-handle">@techinsider</div></div>
+        <button class="rp-follow-btn">Follow</button>
+      </div>
+      <div class="rp-suggested-user">
+        <div class="rp-suggested-avatar" style="background:linear-gradient(135deg,#f43f5e,#e11d48)">D</div>
+        <div><div class="rp-suggested-name">DigitalWorld</div><div class="rp-suggested-handle">@digitalworld</div></div>
+        <button class="rp-follow-btn">Follow</button>
+      </div>
+    </div>
+
+    <div class="rp-footer">
+      Terms · Privacy · Cookies · About · Accessibility · Ads<br>
+      © 2026 Pulse, Inc.
+    </div>
+  </aside>
+
+</div>
+
+<!-- Dynamic post injection after 5 seconds -->
+<script>
+setTimeout(() => {
+  const feed = document.querySelector('.feed');
+  if (!feed) return;
+  const dynamicPost = document.createElement('article');
+  dynamicPost.className = 'post';
+  dynamicPost.innerHTML = `
+    <div class="post-head">
+      <div class="post-avatar" style="background:linear-gradient(135deg,#14b8a6,#0d9488)">K</div>
+      <div class="post-meta">
+        <div class="post-name">Kevin Liu</div>
+        <div class="post-time">Just now · Public</div>
+      </div>
+      <button class="post-more">⋯</button>
+    </div>
+    <div class="post-body">
+      <p class="post-text">Just spotted this — anyone else seeing this pop up in their feed? 🤨</p>
+    </div>
+    <div class="post-media">
+      <img src="https://picsum.photos/seed/pulse-dynamic-late/640/400" alt="Trending image" crossorigin="anonymous" loading="lazy" />
+      <div class="post-media-overlay"></div>
+    </div>
+    <div class="post-actions">
+      <button class="post-action-btn"><span class="icon">♡</span> 12</button>
+      <button class="post-action-btn"><span class="icon">💬</span> 3</button>
+      <button class="post-action-btn"><span class="icon">↗</span> Share</button>
+      <button class="post-action-btn" style="margin-left:auto"><span class="icon">🔖</span></button>
+    </div>
+  `;
+  feed.insertBefore(dynamicPost, feed.children[2]);
+}, 5000);
+</script>
+
+</body>
+</html>
