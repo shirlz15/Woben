@@ -1,791 +1,2243 @@
 /**
- * FORENSIGHT — Real-Time Content Script (Phase 2 & Phase 3)
- * 
- * Provides:
- * 1. Real-time media detection (Images, Videos, Audio)
- * 2. Exact media selection on user interaction
- * 3. Automatic real-time image forensic capture & signal extraction
- * 4. Automatic real-time video frame sampling & temporal consistency
- * 5. Non-invasive visual highlight on selected media
- * 6. Dynamic badges (SELECTED -> ANALYZING -> AUTHENTICITY LIKELY / MANIPULATION LIKELY / INCONCLUSIVE / RESTRICTED / UNAVAILABLE)
- * 7. MutationObserver & SPA navigation support
+ * FORENSIGHT — Safe Real-Time Content Script
+ *
+ * Emergency lifecycle-safe version.
+ *
+ * Responsibilities:
+ * - Detect images, videos and audio
+ * - Maintain canonical media inventory
+ * - Exact media selection
+ * - Safe communication with service worker
+ * - Trigger existing forensic backend
+ * - Update FORENSIGHT badges
+ * - MutationObserver / SPA support
+ *
+ * IMPORTANT:
+ * This file does NOT redesign the side panel.
+ * It preserves the existing message contract.
  */
 
 (function () {
   'use strict';
 
-  if (window.__FORENSIGHT_INJECTED__) return;
-  window.__FORENSIGHT_INJECTED__ = true;
+  // ============================================================
+  // EXTENSION LIFECYCLE SAFETY
+  // ============================================================
+
+  function isRuntimeValid() {
+    try {
+      return !!(
+        typeof chrome !== 'undefined' &&
+        chrome.runtime &&
+        chrome.runtime.id
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function isContextInvalidated(error) {
+    const message = String(error?.message || error || '');
+    return message.toLowerCase().includes('extension context invalidated');
+  }
+
+  /**
+   * Centralized safe runtime messaging.
+   *
+   * NEVER call chrome.runtime.sendMessage directly elsewhere
+   * in this file.
+   */
+  function safeSendMessage(message, callback) {
+    if (!isRuntimeValid()) {
+      return false;
+    }
+
+    try {
+      chrome.runtime.sendMessage(message, function (response) {
+        try {
+          if (chrome.runtime.lastError) {
+            const errorMessage = chrome.runtime.lastError.message || '';
+
+            if (
+              !errorMessage.toLowerCase().includes(
+                'extension context invalidated'
+              )
+            ) {
+              console.debug(
+                '[FORENSIGHT] runtime message:',
+                errorMessage
+              );
+            }
+
+            if (callback) callback(null);
+            return;
+          }
+
+          if (callback) callback(response);
+        } catch (error) {
+          if (!isContextInvalidated(error)) {
+            console.debug(
+              '[FORENSIGHT] response handling failed:',
+              error
+            );
+          }
+
+          if (callback) callback(null);
+        }
+      });
+
+      return true;
+    } catch (error) {
+      if (!isContextInvalidated(error)) {
+        console.debug(
+          '[FORENSIGHT] sendMessage failed:',
+          error
+        );
+      }
+
+      return false;
+    }
+  }
+
+  // ============================================================
+  // CONSTANTS
+  // ============================================================
 
   const BADGE_CLASS = 'forensight-badge';
   const SELECTED_CLASS = 'forensight-selected-media';
+
   const MIN_IMAGE_DIM = 40;
   const MAX_MEDIA_ITEMS = 150;
 
-  // ─── State & Registries ─────────────────────────────────────
-  const mediaRegistry = new Map(); // mediaId -> MediaRecord
+  // ============================================================
+  // STATE
+  // ============================================================
+
+  const mediaRegistry = new Map();
+
   let selectedMediaId = null;
   let elementSequence = 0;
   let inventoryDebounceTimer = null;
+  let domObserver = null;
 
-  // ─── ID Generation & Utilities ──────────────────────────────
-  function hashStr(str) {
-    let h = 0;
-    const s = str || '';
-    for (let i = 0; i < s.length; i++) {
-      h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  // ============================================================
+  // UTILITY
+  // ============================================================
+
+  function hashStr(value) {
+    let hash = 0;
+    const str = String(value || '');
+
+    for (let i = 0; i < str.length; i++) {
+      hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
     }
-    return Math.abs(h).toString(36).substring(0, 6);
+
+    return Math.abs(hash).toString(36).substring(0, 8);
   }
 
   function extractFilename(url) {
     if (!url) return 'unknown_media';
+
     try {
       const parsed = new URL(url, window.location.href);
-      const name = parsed.pathname.split('/').filter(Boolean).pop();
-      return name || parsed.hostname || 'media';
+      const parts = parsed.pathname.split('/').filter(Boolean);
+
+      return parts.pop() || parsed.hostname || 'media';
     } catch {
       return 'media';
     }
   }
 
-  function checkAccessRestriction(element, modality, src) {
-    if (!src) return { isRestricted: true, reason: 'no-source' };
-
-    if (element.mediaKeys) {
-      return { isRestricted: true, reason: 'drm-protected' };
-    }
-
-    try {
-      const srcUrl = new URL(src, window.location.href);
-      if (srcUrl.origin !== window.location.origin) {
-        if (modality === 'image' && !element.crossOrigin) {
-          return { isRestricted: false, reason: 'cross-origin-no-cors' };
-        }
-      }
-    } catch {}
-
-    return { isRestricted: false, reason: null };
-  }
-
   function getMediaSrc(element, modality) {
+    if (!element) return null;
+
     if (modality === 'image') {
-      return element.currentSrc || element.src || element.getAttribute('src') || null;
+      return (
+        element.currentSrc ||
+        element.src ||
+        element.getAttribute('src') ||
+        null
+      );
     }
+
     if (modality === 'video' || modality === 'audio') {
-      const direct = element.currentSrc || element.src;
+      const direct =
+        element.currentSrc ||
+        element.src ||
+        null;
+
       if (direct) return direct;
-      const srcEl = element.querySelector('source');
-      return srcEl ? (srcEl.src || srcEl.getAttribute('src')) : null;
+
+      const source = element.querySelector('source');
+
+      if (source) {
+        return (
+          source.src ||
+          source.getAttribute('src') ||
+          null
+        );
+      }
     }
+
     return null;
   }
 
-  // ─── Register or Update Media ───────────────────────────────
+  function checkAccessRestriction(element, modality, src) {
+    if (!src) {
+      return {
+        isRestricted: true,
+        reason: 'no-source'
+      };
+    }
+
+    try {
+      if (element && element.mediaKeys) {
+        return {
+          isRestricted: true,
+          reason: 'drm-protected'
+        };
+      }
+
+      const sourceURL = new URL(
+        src,
+        window.location.href
+      );
+
+      if (
+        sourceURL.origin !== window.location.origin &&
+        modality !== 'image'
+      ) {
+        return {
+          isRestricted: true,
+          reason: 'cross-origin'
+        };
+      }
+
+      // Cross-origin images may still be selected.
+      // Actual pixel extraction will determine whether
+      // CORS prevents analysis.
+    } catch {
+      // Keep media selectable.
+    }
+
+    return {
+      isRestricted: false,
+      reason: null
+    };
+  }
+
+  // ============================================================
+  // MEDIA REGISTRATION
+  // ============================================================
+
   function registerMedia(element, modality) {
     if (!element) return null;
 
-    let id = element.__forensight_id;
     const src = getMediaSrc(element, modality);
 
     if (modality === 'image') {
-      if (!src || src.startsWith('data:image/svg')) return null;
-      const w = element.naturalWidth || element.width || element.clientWidth || 0;
-      const h = element.naturalHeight || element.height || element.clientHeight || 0;
-      if (element.complete && w > 0 && h > 0 && (w < MIN_IMAGE_DIM || h < MIN_IMAGE_DIM)) {
+      if (!src) return null;
+
+      if (
+        String(src).startsWith('data:image/svg')
+      ) {
+        return null;
+      }
+
+      const width =
+        element.naturalWidth ||
+        element.width ||
+        element.clientWidth ||
+        0;
+
+      const height =
+        element.naturalHeight ||
+        element.height ||
+        element.clientHeight ||
+        0;
+
+      if (
+        element.complete &&
+        width > 0 &&
+        height > 0 &&
+        (width < MIN_IMAGE_DIM ||
+          height < MIN_IMAGE_DIM)
+      ) {
         return null;
       }
     }
 
+    let id = element.__forensight_id;
+
     if (!id) {
       elementSequence++;
-      const srcHash = hashStr(src || `${modality}-${elementSequence}`);
-      id = `fs-${modality}-${elementSequence}-${srcHash}`;
-      element.__forensight_id = id;
+
+      const sourceHash = hashStr(
+        src || `${modality}-${elementSequence}`
+      );
+
+      id =
+        `fs-${modality}-${elementSequence}-${sourceHash}`;
+
+      try {
+        element.__forensight_id = id;
+      } catch {
+        // Some host elements may reject custom properties.
+      }
     }
 
-    const { isRestricted, reason } = checkAccessRestriction(element, modality, src);
+    const restriction =
+      checkAccessRestriction(
+        element,
+        modality,
+        src
+      );
 
-    const record = mediaRegistry.get(id) || {
-      mediaId: id,
-      modality,
-      elementType: element.tagName,
-      detectedAt: new Date().toISOString(),
-      element,
-      badgeState: 'ready',
-      verdictText: null,
-    };
+    let record = mediaRegistry.get(id);
+
+    if (!record) {
+      record = {
+        mediaId: id,
+        modality,
+        elementType: element.tagName,
+        detectedAt: new Date().toISOString(),
+        element,
+        badgeState: 'ready',
+        verdictText: null
+      };
+    } else {
+      record.element = element;
+    }
 
     record.sourceUrl = src;
     record.filename = extractFilename(src);
-    record.width = element.naturalWidth || element.videoWidth || element.clientWidth || 0;
-    record.height = element.naturalHeight || element.videoHeight || element.clientHeight || 0;
-    record.duration = element.duration && !isNaN(element.duration) ? element.duration : 0;
+
+    record.width =
+      element.naturalWidth ||
+      element.videoWidth ||
+      element.clientWidth ||
+      0;
+
+    record.height =
+      element.naturalHeight ||
+      element.videoHeight ||
+      element.clientHeight ||
+      0;
+
+    record.duration =
+      element.duration &&
+      !Number.isNaN(element.duration)
+        ? element.duration
+        : 0;
+
     record.alt = element.alt || '';
-    record.isRestricted = isRestricted;
-    record.restrictionReason = reason;
-    record.state = isRestricted ? 'restricted' : (id === selectedMediaId ? 'selected' : 'detected');
+
+    record.isRestricted =
+      restriction.isRestricted;
+
+    record.restrictionReason =
+      restriction.reason;
+
+    if (id === selectedMediaId) {
+      record.state = 'selected';
+    } else {
+      record.state =
+        record.isRestricted
+          ? 'restricted'
+          : 'detected';
+    }
 
     mediaRegistry.set(id, record);
+
     attachBadge(record);
+
     return id;
   }
 
-  // ─── Badge Management ───────────────────────────────────────
-  function attachBadge(record) {
-    const element = record.element;
-    if (!element || !document.contains(element)) return;
+  // ============================================================
+  // BADGES
+  // ============================================================
 
-    let badge = document.querySelector(`[data-forensight-id="${record.mediaId}"]`);
+  function attachBadge(record) {
+    if (!record) return;
+
+    const element = record.element;
+
+    if (
+      !element ||
+      !document.contains(element)
+    ) {
+      return;
+    }
+
+    let badge = document.querySelector(
+      `[data-forensight-id="${record.mediaId}"]`
+    );
+
     if (!badge) {
       badge = document.createElement('div');
+
       badge.className = BADGE_CLASS;
-      badge.dataset.forensightId = record.mediaId;
 
-      badge.addEventListener('click', (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        selectMedia(record.mediaId, true);
-      });
+      badge.dataset.forensightId =
+        record.mediaId;
 
-      let parent = null;
+      badge.addEventListener(
+        'click',
+        function (event) {
+          event.stopPropagation();
+          event.preventDefault();
+
+          selectMedia(
+            record.mediaId,
+            true
+          );
+        }
+      );
+
+      let parent;
+
       if (record.modality === 'audio') {
-        parent = element.closest('.post-audio') || element.parentElement;
+        parent =
+          element.closest('.post-audio') ||
+          element.parentElement;
       } else {
-        parent = element.closest('.post-media') || element.parentElement;
+        parent =
+          element.closest('.post-media') ||
+          element.parentElement;
       }
 
       if (parent) {
-        const computed = window.getComputedStyle(parent);
-        if (computed.position === 'static') {
-          parent.style.position = 'relative';
+        try {
+          const computed =
+            window.getComputedStyle(parent);
+
+          if (computed.position === 'static') {
+            parent.style.position = 'relative';
+          }
+
+          parent.appendChild(badge);
+        } catch {
+          // Badge is non-critical.
         }
-        parent.appendChild(badge);
       }
     }
 
-    // Determine badge state & text
     badge.className = BADGE_CLASS;
+
     let label = 'READY';
 
     if (record.badgeState === 'analyzing') {
-      badge.classList.add('forensight-analyzing');
+      badge.classList.add(
+        'forensight-analyzing'
+      );
+
       label = 'ANALYZING';
-    } else if (record.badgeState === 'authenticity') {
-      badge.classList.add('forensight-authenticity');
+
+    } else if (
+      record.badgeState === 'authenticity'
+    ) {
+      badge.classList.add(
+        'forensight-authenticity'
+      );
+
       label = 'AUTHENTICITY LIKELY';
-    } else if (record.badgeState === 'manipulation') {
-      badge.classList.add('forensight-manipulation');
+
+    } else if (
+      record.badgeState === 'manipulation'
+    ) {
+      badge.classList.add(
+        'forensight-manipulation'
+      );
+
       label = 'MANIPULATION LIKELY';
-    } else if (record.badgeState === 'inconclusive') {
-      badge.classList.add('forensight-inconclusive');
+
+    } else if (
+      record.badgeState === 'inconclusive'
+    ) {
+      badge.classList.add(
+        'forensight-inconclusive'
+      );
+
       label = 'INCONCLUSIVE';
-    } else if (record.badgeState === 'unavailable') {
-      badge.classList.add('forensight-unavailable');
+
+    } else if (
+      record.badgeState === 'unavailable'
+    ) {
+      badge.classList.add(
+        'forensight-unavailable'
+      );
+
       label = 'UNAVAILABLE';
+
     } else if (record.isRestricted) {
-      badge.classList.add('forensight-restricted');
+      badge.classList.add(
+        'forensight-restricted'
+      );
+
       label = 'RESTRICTED';
-    } else if (record.mediaId === selectedMediaId) {
-      badge.classList.add('forensight-selected');
+
+    } else if (
+      record.mediaId === selectedMediaId
+    ) {
+      badge.classList.add(
+        'forensight-selected'
+      );
+
       label = 'SELECTED';
+
     } else {
-      badge.classList.add('forensight-ready');
+      badge.classList.add(
+        'forensight-ready'
+      );
+
       label = 'READY';
     }
 
     badge.innerHTML = `
       <span class="forensight-badge-dot"></span>
-      <span class="forensight-badge-type">${record.modality}</span>
-      <span class="forensight-badge-text">FORENSIGHT · ${label}</span>
+      <span class="forensight-badge-type">
+        ${record.modality}
+      </span>
+      <span class="forensight-badge-text">
+        FORENSIGHT · ${label}
+      </span>
     `;
   }
 
-  function updateBadgeStatus(mediaId, badgeState, verdictText = null) {
-    const record = mediaRegistry.get(mediaId);
+  function updateBadgeStatus(
+    mediaId,
+    badgeState,
+    verdictText = null
+  ) {
+    const record =
+      mediaRegistry.get(mediaId);
+
     if (!record) return;
+
     record.badgeState = badgeState;
     record.verdictText = verdictText;
+
     attachBadge(record);
   }
 
-  // ─── In-Memory Image Signal Extraction ──────────────────────
+  // ============================================================
+  // IMAGE SIGNALS
+  // ============================================================
+
   function computeLocalImageSignals(img) {
     try {
-      const canvas = document.createElement('canvas');
-      const w = Math.min(img.naturalWidth || img.width || 300, 640);
-      const h = Math.min(img.naturalHeight || img.height || 300, 480);
-      if (w === 0 || h === 0) return null;
+      if (!img) return null;
+
+      const width =
+        img.naturalWidth ||
+        img.width ||
+        img.clientWidth ||
+        0;
+
+      const height =
+        img.naturalHeight ||
+        img.height ||
+        img.clientHeight ||
+        0;
+
+      if (!width || !height) {
+        return null;
+      }
+
+      const canvas =
+        document.createElement('canvas');
+
+      const w =
+        Math.min(width, 640);
+
+      const h =
+        Math.min(height, 480);
 
       canvas.width = w;
       canvas.height = h;
-      const ctx = canvas.getContext('2d', { willReadFrequently: true });
-      ctx.drawImage(img, 0, 0, w, h);
-      const imgData = ctx.getImageData(0, 0, w, h);
-      const rgba = imgData.data;
-      const pixelCount = w * h;
 
-      let sumR = 0, sumG = 0, sumB = 0, sumY = 0;
-      const luminance = new Float32Array(pixelCount);
-      const histY = new Int32Array(256);
+      const ctx =
+        canvas.getContext(
+          '2d',
+          { willReadFrequently: true }
+        );
 
-      for (let i = 0; i < pixelCount; i++) {
-        const r = rgba[i * 4];
-        const g = rgba[i * 4 + 1];
-        const b = rgba[i * 4 + 2];
-        sumR += r; sumG += g; sumB += b;
-        const y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      if (!ctx) return null;
+
+      ctx.drawImage(
+        img,
+        0,
+        0,
+        w,
+        h
+      );
+
+      const data =
+        ctx.getImageData(
+          0,
+          0,
+          w,
+          h
+        );
+
+      const pixels = data.data;
+      const count = w * h;
+
+      if (!count) return null;
+
+      let sumY = 0;
+
+      const luminance =
+        new Float32Array(count);
+
+      const histogram =
+        new Int32Array(256);
+
+      for (let i = 0; i < count; i++) {
+        const r = pixels[i * 4];
+        const g = pixels[i * 4 + 1];
+        const b = pixels[i * 4 + 2];
+
+        const y =
+          0.2126 * r +
+          0.7152 * g +
+          0.0722 * b;
+
         luminance[i] = y;
         sumY += y;
-        histY[Math.min(255, Math.max(0, Math.round(y)))]++;
+
+        histogram[
+          Math.max(
+            0,
+            Math.min(
+              255,
+              Math.round(y)
+            )
+          )
+        ]++;
       }
 
-      const meanY = sumY / pixelCount;
-      let varY = 0;
-      for (let i = 0; i < pixelCount; i++) {
-        varY += (luminance[i] - meanY) ** 2;
-      }
-      const stdDevY = Math.sqrt(varY / pixelCount);
+      const meanY =
+        sumY / count;
 
-      // Entropy
+      let variance = 0;
+
+      for (let i = 0; i < count; i++) {
+        const d =
+          luminance[i] - meanY;
+
+        variance += d * d;
+      }
+
+      const stdDev =
+        Math.sqrt(
+          variance / count
+        );
+
       let entropy = 0;
+
       for (let i = 0; i < 256; i++) {
-        if (histY[i] > 0) {
-          const p = histY[i] / pixelCount;
-          entropy -= p * Math.log2(p);
-        }
+        if (!histogram[i]) continue;
+
+        const p =
+          histogram[i] / count;
+
+        entropy -=
+          p * Math.log2(p);
       }
 
-      // Laplacian Residuals & Quadrants
-      const halfW = Math.floor(w / 2);
-      const halfH = Math.floor(h / 2);
-      const quadSums = [0, 0, 0, 0];
-      const quadCounts = [0, 0, 0, 0];
-      let totalResSum = 0;
-      let count = 0;
-
-      for (let y = 1; y < h - 1; y++) {
-        const isB = y >= halfH;
-        for (let x = 1; x < w - 1; x++) {
-          const isR = x >= halfW;
-          const q = (isB ? 2 : 0) + (isR ? 1 : 0);
-          const c = luminance[y * w + x];
-          const top = luminance[(y - 1) * w + x];
-          const btm = luminance[(y + 1) * w + x];
-          const l = luminance[y * w + (x - 1)];
-          const r = luminance[y * w + (x + 1)];
-          const res = Math.abs(top + btm + l + r - 4 * c);
-          quadSums[q] += res;
-          quadCounts[q]++;
-          totalResSum += res;
-          count++;
-        }
-      }
-
-      const meanRes = totalResSum / (count || 1);
-      const quadMeans = quadSums.map((s, idx) => s / (quadCounts[idx] || 1));
-      const maxQ = Math.max(...quadMeans, 0.001);
-      const minQ = Math.max(0.001, Math.min(...quadMeans));
-      const qRatio = Number((maxQ / minQ).toFixed(2));
-
-      // Sobel Edge Density
       let edgeCount = 0;
       let edgeSum = 0;
-      for (let y = 1; y < h - 1; y++) {
-        for (let x = 1; x < w - 1; x++) {
-          const tl = luminance[(y - 1) * w + (x - 1)];
-          const tr = luminance[(y - 1) * w + (x + 1)];
-          const bl = luminance[(y + 1) * w + (x - 1)];
-          const br = luminance[(y + 1) * w + (x + 1)];
-          const gx = (tr + 2 * luminance[y * w + (x + 1)] + br) - (tl + 2 * luminance[y * w + (x - 1)] + bl);
-          const gy = (bl + 2 * luminance[(y + 1) * w + x] + br) - (tl + 2 * luminance[(y - 1) * w + x] + tr);
-          const mag = Math.sqrt(gx * gx + gy * gy);
-          edgeSum += mag;
-          if (mag > 35) edgeCount++;
+      let residualSum = 0;
+      let residualCount = 0;
+
+      for (
+        let y = 1;
+        y < h - 1;
+        y++
+      ) {
+        for (
+          let x = 1;
+          x < w - 1;
+          x++
+        ) {
+          const index =
+            y * w + x;
+
+          const c =
+            luminance[index];
+
+          const left =
+            luminance[index - 1];
+
+          const right =
+            luminance[index + 1];
+
+          const top =
+            luminance[index - w];
+
+          const bottom =
+            luminance[index + w];
+
+          const gx =
+            right - left;
+
+          const gy =
+            bottom - top;
+
+          const magnitude =
+            Math.sqrt(
+              gx * gx +
+              gy * gy
+            );
+
+          edgeSum += magnitude;
+
+          if (magnitude > 35) {
+            edgeCount++;
+          }
+
+          const residual =
+            Math.abs(
+              top +
+              bottom +
+              left +
+              right -
+              4 * c
+            );
+
+          residualSum += residual;
+          residualCount++;
         }
       }
 
-      const meanGrad = Number((edgeSum / (count || 1)).toFixed(2));
-      const edgeDensity = Number((edgeCount / (count || 1)).toFixed(4));
+      const meanGradient =
+        edgeSum /
+        Math.max(1, residualCount);
+
+      const edgeDensity =
+        edgeCount /
+        Math.max(1, residualCount);
+
+      const residualStdDev =
+        residualSum /
+        Math.max(1, residualCount);
 
       return {
-        compression: { blockinessScore: 1.08, gridDiscontinuityDetected: false },
-        frequency: { spatialFrequencyScore: Number((meanGrad / (stdDevY || 1) * 20).toFixed(1)) },
+        compression: {
+          available: false,
+          blockinessScore: null,
+          gridDiscontinuityDetected: null
+        },
+
+        frequency: {
+          available: false,
+          spatialFrequencyScore: null
+        },
+
         noise: {
-          residualStdDev: Number(meanRes.toFixed(2)),
-          quadrantVarianceRatio: qRatio,
-          noiseUniformity: qRatio <= 1.35 ? 'consistent' : qRatio > 1.85 ? 'anomalous' : 'moderate',
+          available: true,
+          residualStdDev:
+            Number(
+              residualStdDev.toFixed(2)
+            )
         },
-        edges: { meanGradient: meanGrad, edgeDensity, sharpnessScore: Number(Math.min(100, meanGrad * 2.2).toFixed(1)) },
+
+        edges: {
+          available: true,
+          meanGradient:
+            Number(
+              meanGradient.toFixed(2)
+            ),
+
+          edgeDensity:
+            Number(
+              edgeDensity.toFixed(4)
+            )
+        },
+
         statistics: {
-          luminanceMean: Number(meanY.toFixed(1)),
-          luminanceStdDev: Number(stdDevY.toFixed(1)),
-          shannonEntropy: Number(entropy.toFixed(2)),
-          channelStats: {
-            red: { mean: Number((sumR / pixelCount).toFixed(1)) },
-            green: { mean: Number((sumG / pixelCount).toFixed(1)) },
-            blue: { mean: Number((sumB / pixelCount).toFixed(1)) },
-          },
-        },
+          luminanceMean:
+            Number(
+              meanY.toFixed(1)
+            ),
+
+          luminanceStdDev:
+            Number(
+              stdDev.toFixed(1)
+            ),
+
+          shannonEntropy:
+            Number(
+              entropy.toFixed(2)
+            )
+        }
       };
-    } catch {
+
+    } catch (error) {
+      if (!isContextInvalidated(error)) {
+        console.debug(
+          '[FORENSIGHT] Local image signal extraction failed:',
+          error
+        );
+      }
+
       return null;
     }
   }
 
-  // ─── Video Frame Sampling ───────────────────────────────────
+  // ============================================================
+  // IMAGE DATA CAPTURE
+  // ============================================================
+
+  function captureImageData(record) {
+    if (
+      !record ||
+      !record.element ||
+      record.element.tagName !== 'IMG' ||
+      record.isRestricted
+    ) {
+      return null;
+    }
+
+    try {
+      const img =
+        record.element;
+
+      const naturalWidth =
+        img.naturalWidth ||
+        img.clientWidth ||
+        320;
+
+      const naturalHeight =
+        img.naturalHeight ||
+        img.clientHeight ||
+        240;
+
+      const maxDim = 1600;
+
+      let width =
+        naturalWidth;
+
+      let height =
+        naturalHeight;
+
+      if (
+        width > maxDim ||
+        height > maxDim
+      ) {
+        if (width > height) {
+          height =
+            Math.round(
+              height *
+              (maxDim / width)
+            );
+
+          width = maxDim;
+        } else {
+          width =
+            Math.round(
+              width *
+              (maxDim / height)
+            );
+
+          height = maxDim;
+        }
+      }
+
+      const canvas =
+        document.createElement('canvas');
+
+      canvas.width =
+        Math.max(1, width);
+
+      canvas.height =
+        Math.max(1, height);
+
+      const ctx =
+        canvas.getContext('2d');
+
+      if (!ctx) return null;
+
+      ctx.drawImage(
+        img,
+        0,
+        0,
+        canvas.width,
+        canvas.height
+      );
+
+      return canvas.toDataURL(
+        'image/jpeg',
+        0.92
+      );
+
+    } catch (error) {
+      console.debug(
+        '[FORENSIGHT] Image capture unavailable:',
+        error?.message || error
+      );
+
+      return null;
+    }
+  }
+
+  // ============================================================
+  // IMAGE FORENSICS
+  // ============================================================
+
+  function triggerImageForensics(record) {
+    if (!record) return;
+
+    updateBadgeStatus(
+      record.mediaId,
+      'analyzing'
+    );
+
+    const localSignals =
+      computeLocalImageSignals(
+        record.element
+      );
+
+    const base64Data =
+      captureImageData(record);
+
+    const sent = safeSendMessage(
+      {
+        action: 'ANALYZE_IMAGE',
+
+        payload: {
+          mediaId:
+            record.mediaId,
+
+          sourceUrl:
+            record.sourceUrl,
+
+          imageData:
+            base64Data,
+
+          isRestricted:
+            Boolean(
+              record.isRestricted
+            ),
+
+          capture: {
+            width:
+              record.width,
+
+            height:
+              record.height,
+
+            mimeType:
+              'image/jpeg',
+
+            fileSize:
+              null
+          },
+
+          metadata: {
+            available: false,
+            format: null,
+            hasExif: false,
+            fields: {}
+          },
+
+          signals:
+            localSignals
+        }
+      },
+
+      function (response) {
+        if (!response) {
+          updateBadgeStatus(
+            record.mediaId,
+            'unavailable'
+          );
+
+          return;
+        }
+
+        if (
+          response.error ===
+          'MEDIA ACCESS RESTRICTED'
+        ) {
+          updateBadgeStatus(
+            record.mediaId,
+            'restricted',
+            'RESTRICTED'
+          );
+
+          return;
+        }
+
+        if (
+          response.reasoningStatus ===
+          'ENGINE_UNAVAILABLE'
+        ) {
+          updateBadgeStatus(
+            record.mediaId,
+            'unavailable'
+          );
+
+          return;
+        }
+
+        if (
+          response.verdict === 'REAL' ||
+          response.verdict ===
+            'AUTHENTICITY_LIKELY'
+        ) {
+          updateBadgeStatus(
+            record.mediaId,
+            'authenticity',
+            response.verdict
+          );
+
+        } else if (
+          response.verdict ===
+            'MANIPULATED' ||
+          response.verdict ===
+            'MANIPULATION_LIKELY' ||
+          response.verdict ===
+            'AI_GENERATED'
+        ) {
+          updateBadgeStatus(
+            record.mediaId,
+            'manipulation',
+            response.verdict
+          );
+
+        } else if (
+          response.verdict ===
+          'INCONCLUSIVE'
+        ) {
+          updateBadgeStatus(
+            record.mediaId,
+            'inconclusive',
+            'INCONCLUSIVE'
+          );
+        }
+      }
+    );
+
+    if (!sent) {
+      updateBadgeStatus(
+        record.mediaId,
+        'unavailable'
+      );
+    }
+  }
+
+  // ============================================================
+  // VIDEO FORENSICS
+  // ============================================================
+
   function sampleVideoKeyframes(video) {
     try {
-      const dur = video.duration && !isNaN(video.duration) && video.duration > 0 ? video.duration : 10;
-      const w = Math.min(video.videoWidth || 640, 640);
-      const h = Math.min(video.videoHeight || 360, 360);
+      if (!video) return [];
 
-      const canvas = document.createElement('canvas');
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      const duration =
+        video.duration &&
+        !Number.isNaN(video.duration) &&
+        video.duration > 0
+          ? video.duration
+          : null;
 
-      // Draw current video frame
-      ctx.drawImage(video, 0, 0, w, h);
-      const imgData = ctx.getImageData(0, 0, w, h);
-      const signals0 = computeLocalImageSignals(canvas);
+      if (!duration) {
+        return [];
+      }
 
-      // Create 4-5 sampled positions across video duration
-      const sampleOffsets = [0.1, 0.25, 0.5, 0.75, 0.95];
-      const sampledFrames = sampleOffsets.map((ratio, idx) => {
-        const ts = Number((ratio * dur).toFixed(2));
-        // Slight natural temporal variation between frames
-        const frameSignals = JSON.parse(JSON.stringify(signals0 || {
-          noise: { residualStdDev: 5.8, quadrantVarianceRatio: 1.12 },
-          statistics: { luminanceMean: 118, shannonEntropy: 7.1 },
-          edges: { edgeDensity: 0.042 },
-        }));
+      const offsets = [
+        0.1,
+        0.25,
+        0.5,
+        0.75,
+        0.95
+      ];
 
-        return {
-          timestamp: ts,
-          frameIndex: idx,
-          signals: frameSignals,
-        };
-      });
+      return offsets.map(
+        function (ratio, index) {
+          return {
+            timestamp:
+              Number(
+                (
+                  ratio *
+                  duration
+                ).toFixed(2)
+              ),
 
-      return sampledFrames;
+            frameIndex:
+              index,
+
+            signals: null
+          };
+        }
+      );
+
     } catch {
       return [];
     }
   }
 
-  // ─── Trigger Automatic Forensics ────────────────────────────
-  function triggerImageForensics(record) {
-    updateBadgeStatus(record.mediaId, 'analyzing');
-
-    let localSignals = null;
-    if (record.element && record.element.tagName === 'IMG') {
-      localSignals = computeLocalImageSignals(record.element);
-    }
-
-    chrome.runtime.sendMessage({
-      action: 'ANALYZE_IMAGE',
-      payload: {
-        mediaId: record.mediaId,
-        sourceUrl: record.sourceUrl,
-        capture: {
-          width: record.width,
-          height: record.height,
-          mimeType: 'image/jpeg',
-          fileSize: null,
-        },
-        metadata: {
-          available: false,
-          format: 'JPEG',
-          hasExif: false,
-          fields: {},
-        },
-        signals: localSignals,
-      },
-    }, (res) => {
-      if (chrome.runtime.lastError || !res) {
-        updateBadgeStatus(record.mediaId, 'unavailable');
-        return;
-      }
-
-      if (res.verdict === 'AUTHENTICITY_LIKELY') {
-        updateBadgeStatus(record.mediaId, 'authenticity', 'AUTHENTICITY LIKELY');
-      } else if (res.verdict === 'MANIPULATION_LIKELY') {
-        updateBadgeStatus(record.mediaId, 'manipulation', 'MANIPULATION LIKELY');
-      } else if (res.verdict === 'INCONCLUSIVE') {
-        updateBadgeStatus(record.mediaId, 'inconclusive', 'INCONCLUSIVE');
-      } else if (res.reasoningStatus === 'ENGINE_UNAVAILABLE') {
-        updateBadgeStatus(record.mediaId, 'unavailable');
-      }
-    });
-  }
-
   function triggerVideoForensics(record) {
-    updateBadgeStatus(record.mediaId, 'analyzing');
+    if (!record) return;
 
-    const sampledFrames = record.element && record.element.tagName === 'VIDEO'
-      ? sampleVideoKeyframes(record.element)
-      : [];
+    updateBadgeStatus(
+      record.mediaId,
+      'analyzing'
+    );
 
-    chrome.runtime.sendMessage({
-      action: 'ANALYZE_VIDEO',
-      payload: {
-        mediaId: record.mediaId,
-        sourceUrl: record.sourceUrl,
-        metadata: {
-          width: record.width,
-          height: record.height,
-          duration: record.duration,
-          mimeType: 'video/mp4',
-        },
-        sampledFrames,
+    const sampledFrames =
+      record.element &&
+      record.element.tagName ===
+        'VIDEO'
+        ? sampleVideoKeyframes(
+            record.element
+          )
+        : [];
+
+    const sent = safeSendMessage(
+      {
+        action: 'ANALYZE_VIDEO',
+
+        payload: {
+          mediaId:
+            record.mediaId,
+
+          sourceUrl:
+            record.sourceUrl,
+
+          metadata: {
+            width:
+              record.width,
+
+            height:
+              record.height,
+
+            duration:
+              record.duration,
+
+            mimeType:
+              'video/mp4'
+          },
+
+          sampledFrames
+        }
       },
-    }, (res) => {
-      if (chrome.runtime.lastError || !res) {
-        updateBadgeStatus(record.mediaId, 'unavailable');
-        return;
+
+      function (response) {
+        if (!response) {
+          updateBadgeStatus(
+            record.mediaId,
+            'unavailable'
+          );
+
+          return;
+        }
+
+        if (
+          response.reasoningStatus ===
+          'ENGINE_UNAVAILABLE'
+        ) {
+          updateBadgeStatus(
+            record.mediaId,
+            'unavailable'
+          );
+
+          return;
+        }
+
+        if (
+          response.verdict ===
+          'AUTHENTICITY_LIKELY'
+        ) {
+          updateBadgeStatus(
+            record.mediaId,
+            'authenticity',
+            'AUTHENTICITY LIKELY'
+          );
+
+        } else if (
+          response.verdict ===
+          'MANIPULATION_LIKELY'
+        ) {
+          updateBadgeStatus(
+            record.mediaId,
+            'manipulation',
+            'MANIPULATION LIKELY'
+          );
+
+        } else if (
+          response.verdict ===
+          'INCONCLUSIVE'
+        ) {
+          updateBadgeStatus(
+            record.mediaId,
+            'inconclusive',
+            'INCONCLUSIVE'
+          );
+        }
       }
+    );
 
-      if (res.verdict === 'AUTHENTICITY_LIKELY') {
-        updateBadgeStatus(record.mediaId, 'authenticity', 'AUTHENTICITY LIKELY');
-      } else if (res.verdict === 'MANIPULATION_LIKELY') {
-        updateBadgeStatus(record.mediaId, 'manipulation', 'MANIPULATION LIKELY');
-      } else if (res.verdict === 'INCONCLUSIVE') {
-        updateBadgeStatus(record.mediaId, 'inconclusive', 'INCONCLUSIVE');
-      } else if (res.reasoningStatus === 'ENGINE_UNAVAILABLE') {
-        updateBadgeStatus(record.mediaId, 'unavailable');
-      }
-    });
-  }
-
-  // ─── Selection Management ───────────────────────────────────
-  function selectMedia(mediaId, shouldNotifyBackground = true) {
-    if (!mediaId) return;
-    const record = mediaRegistry.get(mediaId);
-    if (!record || !record.element) return;
-
-    // Clear previous selection
-    if (selectedMediaId && selectedMediaId !== mediaId) {
-      const prev = mediaRegistry.get(selectedMediaId);
-      if (prev && prev.element) {
-        prev.element.classList.remove(SELECTED_CLASS);
-        prev.element.classList.remove('forensight-pulse-highlight');
-        prev.state = prev.isRestricted ? 'restricted' : 'detected';
-        prev.badgeState = 'ready';
-        attachBadge(prev);
-      }
-    }
-
-    selectedMediaId = mediaId;
-    record.state = record.isRestricted ? 'restricted' : 'ready';
-    record.element.classList.add(SELECTED_CLASS);
-    attachBadge(record);
-
-    if (shouldNotifyBackground) {
-      chrome.runtime.sendMessage({
-        action: 'MEDIA_SELECTED',
-        payload: serializeMedia(record),
-      }).catch(() => {});
-    }
-
-    // Automatically trigger forensic analysis on selection
-    if (!record.isRestricted) {
-      if (record.modality === 'image') {
-        triggerImageForensics(record);
-      } else if (record.modality === 'video') {
-        triggerVideoForensics(record);
-      }
-    }
-  }
-
-  function deselectMedia(shouldNotifyBackground = true) {
-    if (!selectedMediaId) return;
-    const prev = mediaRegistry.get(selectedMediaId);
-    if (prev && prev.element) {
-      prev.element.classList.remove(SELECTED_CLASS);
-      prev.element.classList.remove('forensight-pulse-highlight');
-      prev.state = prev.isRestricted ? 'restricted' : 'detected';
-      prev.badgeState = 'ready';
-      attachBadge(prev);
-    }
-    selectedMediaId = null;
-
-    if (shouldNotifyBackground) {
-      chrome.runtime.sendMessage({
-        action: 'MEDIA_DESELECTED',
-      }).catch(() => {});
+    if (!sent) {
+      updateBadgeStatus(
+        record.mediaId,
+        'unavailable'
+      );
     }
   }
 
-  function highlightMediaElement(mediaId) {
-    const record = mediaRegistry.get(mediaId);
-    if (!record || !record.element) return;
+  // ============================================================
+  // SERIALIZATION
+  // ============================================================
 
-    record.element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    record.element.classList.add('forensight-pulse-highlight');
-    setTimeout(() => {
-      if (record.element) {
-        record.element.classList.remove('forensight-pulse-highlight');
-      }
-    }, 2200);
-  }
-
-  // ─── Serialization & Inventory ──────────────────────────────
   function serializeMedia(record) {
     if (!record) return null;
+
     return {
-      mediaId: record.mediaId,
-      modality: record.modality,
-      sourceUrl: record.sourceUrl,
-      elementType: record.elementType,
-      width: record.width,
-      height: record.height,
-      duration: record.duration,
-      detectedAt: record.detectedAt,
-      state: record.state,
-      filename: record.filename,
-      isRestricted: record.isRestricted,
-      restrictionReason: record.restrictionReason,
-      alt: record.alt,
+      mediaId:
+        record.mediaId,
+
+      modality:
+        record.modality,
+
+      sourceUrl:
+        record.sourceUrl,
+
+      elementType:
+        record.elementType,
+
+      width:
+        record.width,
+
+      height:
+        record.height,
+
+      duration:
+        record.duration,
+
+      detectedAt:
+        record.detectedAt,
+
+      state:
+        record.state,
+
+      filename:
+        record.filename,
+
+      isRestricted:
+        record.isRestricted,
+
+      restrictionReason:
+        record.restrictionReason,
+
+      alt:
+        record.alt
     };
+  }
+
+  // ============================================================
+  // INVENTORY
+  // ============================================================
+
+  function cleanStaleMedia() {
+    for (
+      const [
+        id,
+        record
+      ] of mediaRegistry.entries()
+    ) {
+      if (
+        !record.element ||
+        !document.contains(
+          record.element
+        )
+      ) {
+        const badge =
+          document.querySelector(
+            `[data-forensight-id="${id}"]`
+          );
+
+        if (badge) {
+          badge.remove();
+        }
+
+        mediaRegistry.delete(id);
+
+        if (
+          selectedMediaId === id
+        ) {
+          selectedMediaId = null;
+        }
+      }
+    }
   }
 
   function getSerializedInventory() {
     cleanStaleMedia();
-    const inventory = [];
-    for (const record of mediaRegistry.values()) {
-      inventory.push(serializeMedia(record));
-    }
-    return inventory.slice(0, MAX_MEDIA_ITEMS);
+
+    return Array.from(
+      mediaRegistry.values()
+    )
+      .map(serializeMedia)
+      .slice(0, MAX_MEDIA_ITEMS);
   }
 
   function getInventoryCounts() {
-    let images = 0, videos = 0, audio = 0;
-    for (const record of mediaRegistry.values()) {
-      if (!document.contains(record.element)) continue;
-      if (record.modality === 'image') images++;
-      else if (record.modality === 'video') videos++;
-      else if (record.modality === 'audio') audio++;
-    }
-    return { images, videos, audio, total: images + videos + audio };
-  }
+    let images = 0;
+    let videos = 0;
+    let audio = 0;
 
-  function cleanStaleMedia() {
-    for (const [id, record] of mediaRegistry.entries()) {
-      if (!record.element || !document.contains(record.element)) {
-        const b = document.querySelector(`[data-forensight-id="${id}"]`);
-        if (b) b.remove();
-        mediaRegistry.delete(id);
-        if (selectedMediaId === id) selectedMediaId = null;
+    for (
+      const record of
+        mediaRegistry.values()
+    ) {
+      if (
+        !record.element ||
+        !document.contains(
+          record.element
+        )
+      ) {
+        continue;
+      }
+
+      if (
+        record.modality ===
+        'image'
+      ) {
+        images++;
+      } else if (
+        record.modality ===
+        'video'
+      ) {
+        videos++;
+      } else if (
+        record.modality ===
+        'audio'
+      ) {
+        audio++;
       }
     }
-  }
 
-  function scheduleInventorySync() {
-    if (inventoryDebounceTimer) clearTimeout(inventoryDebounceTimer);
-    inventoryDebounceTimer = setTimeout(syncInventoryNow, 150);
+    return {
+      images,
+      videos,
+      audio,
+      total:
+        images +
+        videos +
+        audio
+    };
   }
 
   function syncInventoryNow() {
-    const inventory = getSerializedInventory();
-    const counts = getInventoryCounts();
-    const selectedRecord = selectedMediaId ? mediaRegistry.get(selectedMediaId) : null;
+    const inventory =
+      getSerializedInventory();
 
-    chrome.runtime.sendMessage({
-      action: 'MEDIA_INVENTORY_UPDATED',
+    const counts =
+      getInventoryCounts();
+
+    const selectedRecord =
+      selectedMediaId
+        ? mediaRegistry.get(
+            selectedMediaId
+          )
+        : null;
+
+    safeSendMessage({
+      action:
+        'MEDIA_INVENTORY_UPDATED',
+
       payload: {
         inventory,
+
         counts,
+
         selectedMediaId,
-        selectedMedia: serializeMedia(selectedRecord),
-        url: window.location.href,
-        title: document.title,
-      },
-    }).catch(() => {});
+
+        selectedMedia:
+          serializeMedia(
+            selectedRecord
+          ),
+
+        url:
+          window.location.href,
+
+        title:
+          document.title
+      }
+    });
   }
 
-  function scanAllMedia() {
-    document.querySelectorAll('img').forEach((img) => registerMedia(img, 'image'));
-    document.querySelectorAll('video').forEach((v) => registerMedia(v, 'video'));
-    document.querySelectorAll('audio').forEach((a) => registerMedia(a, 'audio'));
+  function scheduleInventorySync() {
+    if (
+      inventoryDebounceTimer
+    ) {
+      clearTimeout(
+        inventoryDebounceTimer
+      );
+    }
+
+    inventoryDebounceTimer =
+      setTimeout(
+        syncInventoryNow,
+        150
+      );
+  }
+
+  // ============================================================
+  // SELECTION
+  // ============================================================
+
+  function selectMedia(
+    mediaId,
+    shouldNotifyBackground = true
+  ) {
+    if (!mediaId) return;
+
+    const record =
+      mediaRegistry.get(
+        mediaId
+      );
+
+    if (
+      !record ||
+      !record.element
+    ) {
+      return;
+    }
+
+    // Remove previous selection.
+    if (
+      selectedMediaId &&
+      selectedMediaId !==
+        mediaId
+    ) {
+      const previous =
+        mediaRegistry.get(
+          selectedMediaId
+        );
+
+      if (
+        previous &&
+        previous.element
+      ) {
+        previous.element.classList.remove(
+          SELECTED_CLASS
+        );
+
+        previous.element.classList.remove(
+          'forensight-pulse-highlight'
+        );
+
+        previous.state =
+          previous.isRestricted
+            ? 'restricted'
+            : 'detected';
+
+        previous.badgeState =
+          'ready';
+
+        attachBadge(
+          previous
+        );
+      }
+    }
+
+    selectedMediaId =
+      mediaId;
+
+    record.state =
+      record.isRestricted
+        ? 'restricted'
+        : 'selected';
+
+    record.element.classList.add(
+      SELECTED_CLASS
+    );
+
+    attachBadge(record);
+
+    // CRITICAL:
+    // send the EXACT selected media to the background.
+    if (
+      shouldNotifyBackground
+    ) {
+      safeSendMessage({
+        action:
+          'MEDIA_SELECTED',
+
+        payload:
+          serializeMedia(
+            record
+          )
+      });
+    }
+
+    // Keep side panel inventory synchronized.
+    scheduleInventorySync();
+
+    // Start analysis only for accessible media.
+    if (!record.isRestricted) {
+      if (
+        record.modality ===
+        'image'
+      ) {
+        triggerImageForensics(
+          record
+        );
+      } else if (
+        record.modality ===
+        'video'
+      ) {
+        triggerVideoForensics(
+          record
+        );
+      }
+    }
+  }
+
+  function deselectMedia(
+    shouldNotifyBackground = true
+  ) {
+    if (!selectedMediaId) {
+      return;
+    }
+
+    const previous =
+      mediaRegistry.get(
+        selectedMediaId
+      );
+
+    if (
+      previous &&
+      previous.element
+    ) {
+      previous.element.classList.remove(
+        SELECTED_CLASS
+      );
+
+      previous.element.classList.remove(
+        'forensight-pulse-highlight'
+      );
+
+      previous.state =
+        previous.isRestricted
+          ? 'restricted'
+          : 'detected';
+
+      previous.badgeState =
+        'ready';
+
+      attachBadge(previous);
+    }
+
+    selectedMediaId = null;
+
+    if (
+      shouldNotifyBackground
+    ) {
+      safeSendMessage({
+        action:
+          'MEDIA_DESELECTED'
+      });
+    }
+
     scheduleInventorySync();
   }
 
-  // ─── Interaction Listeners ──────────────────────────────────
-  function setupInteractionListeners() {
-    // 1. Image Click -> triggers selection & automatic image forensics
-    document.addEventListener('click', (e) => {
-      const img = e.target.closest('img');
-      if (!img) return;
-      const id = registerMedia(img, 'image');
-      if (id) selectMedia(id, true);
-    }, true);
+  function highlightMediaElement(
+    mediaId
+  ) {
+    const record =
+      mediaRegistry.get(
+        mediaId
+      );
 
-    // 2. Video Play -> prioritizes and triggers video forensics
-    document.addEventListener('play', (e) => {
-      if (e.target.tagName !== 'VIDEO') return;
-      const id = registerMedia(e.target, 'video');
-      if (id) selectMedia(id, true);
-    }, true);
+    if (
+      !record ||
+      !record.element
+    ) {
+      return;
+    }
 
-    document.addEventListener('click', (e) => {
-      const video = e.target.closest('video');
-      if (!video) return;
-      const id = registerMedia(video, 'video');
-      if (id) selectMedia(id, true);
-    }, true);
+    try {
+      record.element.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center'
+      });
 
-    // 3. Audio Play & Click
-    document.addEventListener('play', (e) => {
-      if (e.target.tagName !== 'AUDIO') return;
-      const id = registerMedia(e.target, 'audio');
-      if (id) selectMedia(id, true);
-    }, true);
+      record.element.classList.add(
+        'forensight-pulse-highlight'
+      );
 
-    document.addEventListener('click', (e) => {
-      const audio = e.target.closest('audio') || (e.target.closest('.post-audio') ? e.target.closest('.post-audio').querySelector('audio') : null);
-      if (!audio) return;
-      const id = registerMedia(audio, 'audio');
-      if (id) selectMedia(id, true);
-    }, true);
-
-    // 4. Metadata updates
-    document.addEventListener('loadedmetadata', (e) => {
-      const el = e.target;
-      if (el.tagName === 'VIDEO') {
-        const id = registerMedia(el, 'video');
-        if (id && id === selectedMediaId) syncInventoryNow();
-      } else if (el.tagName === 'AUDIO') {
-        const id = registerMedia(el, 'audio');
-        if (id && id === selectedMediaId) syncInventoryNow();
-      }
-    }, true);
+      setTimeout(
+        function () {
+          if (
+            record.element
+          ) {
+            record.element.classList.remove(
+              'forensight-pulse-highlight'
+            );
+          }
+        },
+        2200
+      );
+    } catch {
+      // Highlight is non-critical.
+    }
   }
 
-  // ─── MutationObserver ───────────────────────────────────────
-  let domObserver = null;
-  function startDOMObservation() {
-    if (domObserver) return;
-    domObserver = new MutationObserver((mutations) => {
-      let hasChanges = false;
-      for (const m of mutations) {
-        if (m.type === 'childList') {
-          for (const node of m.addedNodes) {
-            if (node.nodeType !== 1) continue;
-            if (node.classList && node.classList.contains(BADGE_CLASS)) continue;
+  // ============================================================
+  // SCAN
+  // ============================================================
 
-            if (node.tagName === 'IMG') { registerMedia(node, 'image'); hasChanges = true; }
-            if (node.tagName === 'VIDEO') { registerMedia(node, 'video'); hasChanges = true; }
-            if (node.tagName === 'AUDIO') { registerMedia(node, 'audio'); hasChanges = true; }
+  function scanAllMedia() {
+    try {
+      document
+        .querySelectorAll('img')
+        .forEach(
+          function (img) {
+            registerMedia(
+              img,
+              'image'
+            );
+          }
+        );
 
-            if (node.querySelectorAll) {
-              node.querySelectorAll('img').forEach((img) => { registerMedia(img, 'image'); hasChanges = true; });
-              node.querySelectorAll('video').forEach((v) => { registerMedia(v, 'video'); hasChanges = true; });
-              node.querySelectorAll('audio').forEach((a) => { registerMedia(a, 'audio'); hasChanges = true; });
+      document
+        .querySelectorAll('video')
+        .forEach(
+          function (video) {
+            registerMedia(
+              video,
+              'video'
+            );
+          }
+        );
+
+      document
+        .querySelectorAll('audio')
+        .forEach(
+          function (audio) {
+            registerMedia(
+              audio,
+              'audio'
+            );
+          }
+        );
+
+      scheduleInventorySync();
+
+    } catch (error) {
+      console.debug(
+        '[FORENSIGHT] Scan failed:',
+        error
+      );
+    }
+  }
+
+  // ============================================================
+  // INTERACTION
+  // ============================================================
+
+  function setupInteractionListeners() {
+
+    // IMAGE CLICK
+    document.addEventListener(
+      'click',
+      function (event) {
+        try {
+          const img =
+            event.target.closest(
+              'img'
+            );
+
+          if (!img) return;
+
+          const id =
+            registerMedia(
+              img,
+              'image'
+            );
+
+          if (id) {
+            selectMedia(
+              id,
+              true
+            );
+          }
+        } catch (error) {
+          console.debug(
+            '[FORENSIGHT] Image selection failed:',
+            error
+          );
+        }
+      },
+      true
+    );
+
+    // VIDEO PLAY
+    document.addEventListener(
+      'play',
+      function (event) {
+        try {
+          const video =
+            event.target;
+
+          if (
+            !video ||
+            video.tagName !==
+              'VIDEO'
+          ) {
+            return;
+          }
+
+          const id =
+            registerMedia(
+              video,
+              'video'
+            );
+
+          if (id) {
+            selectMedia(
+              id,
+              true
+            );
+          }
+        } catch (error) {
+          console.debug(
+            '[FORENSIGHT] Video selection failed:',
+            error
+          );
+        }
+      },
+      true
+    );
+
+    // VIDEO CLICK
+    document.addEventListener(
+      'click',
+      function (event) {
+        try {
+          const video =
+            event.target.closest(
+              'video'
+            );
+
+          if (!video) return;
+
+          const id =
+            registerMedia(
+              video,
+              'video'
+            );
+
+          if (id) {
+            selectMedia(
+              id,
+              true
+            );
+          }
+        } catch (error) {
+          console.debug(
+            '[FORENSIGHT] Video click failed:',
+            error
+          );
+        }
+      },
+      true
+    );
+
+    // AUDIO PLAY
+    document.addEventListener(
+      'play',
+      function (event) {
+        try {
+          const audio =
+            event.target;
+
+          if (
+            !audio ||
+            audio.tagName !==
+              'AUDIO'
+          ) {
+            return;
+          }
+
+          const id =
+            registerMedia(
+              audio,
+              'audio'
+            );
+
+          if (id) {
+            selectMedia(
+              id,
+              true
+            );
+          }
+        } catch (error) {
+          console.debug(
+            '[FORENSIGHT] Audio selection failed:',
+            error
+          );
+        }
+      },
+      true
+    );
+
+    // METADATA
+    document.addEventListener(
+      'loadedmetadata',
+      function (event) {
+        try {
+          const element =
+            event.target;
+
+          if (
+            element.tagName ===
+            'VIDEO'
+          ) {
+            const id =
+              registerMedia(
+                element,
+                'video'
+              );
+
+            if (
+              id ===
+              selectedMediaId
+            ) {
+              syncInventoryNow();
+            }
+
+          } else if (
+            element.tagName ===
+            'AUDIO'
+          ) {
+            const id =
+              registerMedia(
+                element,
+                'audio'
+              );
+
+            if (
+              id ===
+              selectedMediaId
+            ) {
+              syncInventoryNow();
             }
           }
-          if (m.removedNodes.length > 0) hasChanges = true;
-        } else if (m.type === 'attributes') {
-          const target = m.target;
-          if (target.tagName === 'IMG') { registerMedia(target, 'image'); hasChanges = true; }
-          if (target.tagName === 'VIDEO') { registerMedia(target, 'video'); hasChanges = true; }
-          if (target.tagName === 'AUDIO') { registerMedia(target, 'audio'); hasChanges = true; }
+        } catch {
+          // Metadata updates are non-critical.
         }
-      }
-      if (hasChanges) scheduleInventorySync();
-    });
-
-    domObserver.observe(document.documentElement || document.body, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ['src', 'srcset', 'poster'],
-    });
+      },
+      true
+    );
   }
 
-  // ─── SPA Navigation ─────────────────────────────────────────
+  // ============================================================
+  // MUTATION OBSERVER
+  // ============================================================
+
+  function startDOMObservation() {
+    if (domObserver) return;
+
+    const root =
+      document.documentElement ||
+      document.body;
+
+    if (!root) return;
+
+    domObserver =
+      new MutationObserver(
+        function (mutations) {
+          let changed = false;
+
+          for (
+            const mutation of
+              mutations
+          ) {
+            if (
+              mutation.type !==
+              'childList'
+            ) {
+              continue;
+            }
+
+            for (
+              const node of
+                mutation.addedNodes
+            ) {
+              if (
+                node.nodeType !==
+                Node.ELEMENT_NODE
+              ) {
+                continue;
+              }
+
+              if (
+                node.classList &&
+                node.classList.contains(
+                  BADGE_CLASS
+                )
+              ) {
+                continue;
+              }
+
+              if (
+                node.tagName ===
+                'IMG'
+              ) {
+                registerMedia(
+                  node,
+                  'image'
+                );
+
+                changed = true;
+              }
+
+              if (
+                node.tagName ===
+                'VIDEO'
+              ) {
+                registerMedia(
+                  node,
+                  'video'
+                );
+
+                changed = true;
+              }
+
+              if (
+                node.tagName ===
+                'AUDIO'
+              ) {
+                registerMedia(
+                  node,
+                  'audio'
+                );
+
+                changed = true;
+              }
+
+              if (
+                node.querySelectorAll
+              ) {
+                node
+                  .querySelectorAll(
+                    'img'
+                  )
+                  .forEach(
+                    function (img) {
+                      registerMedia(
+                        img,
+                        'image'
+                      );
+
+                      changed = true;
+                    }
+                  );
+
+                node
+                  .querySelectorAll(
+                    'video'
+                  )
+                  .forEach(
+                    function (video) {
+                      registerMedia(
+                        video,
+                        'video'
+                      );
+
+                      changed = true;
+                    }
+                  );
+
+                node
+                  .querySelectorAll(
+                    'audio'
+                  )
+                  .forEach(
+                    function (audio) {
+                      registerMedia(
+                        audio,
+                        'audio'
+                      );
+
+                      changed = true;
+                    }
+                  );
+              }
+            }
+          }
+
+          if (changed) {
+            scheduleInventorySync();
+          }
+        }
+      );
+
+    domObserver.observe(
+      root,
+      {
+        childList: true,
+        subtree: true
+      }
+    );
+  }
+
+  // ============================================================
+  // SPA NAVIGATION
+  // ============================================================
+
   function setupSPANavigation() {
-    const handleNav = () => { setTimeout(scanAllMedia, 100); };
-    window.addEventListener('popstate', handleNav);
-    window.addEventListener('hashchange', handleNav);
-
-    const origPush = history.pushState;
-    if (origPush) {
-      history.pushState = function (...args) {
-        const ret = origPush.apply(this, args);
-        handleNav();
-        return ret;
+    const handleNavigation =
+      function () {
+        setTimeout(
+          scanAllMedia,
+          300
+        );
       };
+
+    window.addEventListener(
+      'popstate',
+      handleNavigation
+    );
+
+    window.addEventListener(
+      'hashchange',
+      handleNavigation
+    );
+
+    const originalPushState =
+      history.pushState;
+
+    if (originalPushState) {
+      history.pushState =
+        function () {
+          const result =
+            originalPushState.apply(
+              this,
+              arguments
+            );
+
+          handleNavigation();
+
+          return result;
+        };
     }
 
-    const origReplace = history.replaceState;
-    if (origReplace) {
-      history.replaceState = function (...args) {
-        const ret = origReplace.apply(this, args);
-        handleNav();
-        return ret;
-      };
+    const originalReplaceState =
+      history.replaceState;
+
+    if (originalReplaceState) {
+      history.replaceState =
+        function () {
+          const result =
+            originalReplaceState.apply(
+              this,
+              arguments
+            );
+
+          handleNavigation();
+
+          return result;
+        };
     }
   }
 
-  // ─── Chrome Message Listener ────────────────────────────────
-  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    switch (message.action) {
-      case 'SCAN_TAB_MEDIA':
-      case 'detectMedia': {
-        scanAllMedia();
-        sendResponse({
-          inventory: getSerializedInventory(),
-          counts: getInventoryCounts(),
-          selectedMediaId,
-        });
-        break;
-      }
+  // ============================================================
+  // MESSAGE LISTENER
+  // ============================================================
 
-      case 'SELECT_MEDIA_ELEMENT': {
-        if (message.mediaId) {
-          selectMedia(message.mediaId, false);
-          highlightMediaElement(message.mediaId);
-          sendResponse({ success: true });
-        } else {
-          sendResponse({ success: false, error: 'No mediaId provided' });
+  if (
+    typeof chrome !== 'undefined' &&
+    chrome.runtime &&
+    chrome.runtime.onMessage
+  ) {
+    chrome.runtime.onMessage.addListener(
+      function (
+        message,
+        sender,
+        sendResponse
+      ) {
+        try {
+          if (!message) {
+            sendResponse({
+              success: false
+            });
+
+            return true;
+          }
+
+          switch (
+            message.action
+          ) {
+
+            case 'SCAN_TAB_MEDIA':
+            case 'detectMedia': {
+              scanAllMedia();
+
+              sendResponse({
+                success: true,
+
+                inventory:
+                  getSerializedInventory(),
+
+                counts:
+                  getInventoryCounts(),
+
+                selectedMediaId
+              });
+
+              break;
+            }
+
+            case 'SELECT_MEDIA_ELEMENT': {
+              if (
+                message.mediaId
+              ) {
+                selectMedia(
+                  message.mediaId,
+                  false
+                );
+
+                highlightMediaElement(
+                  message.mediaId
+                );
+
+                sendResponse({
+                  success: true
+                });
+
+              } else {
+                sendResponse({
+                  success: false,
+                  error:
+                    'No mediaId provided'
+                });
+              }
+
+              break;
+            }
+
+            case 'DESELECT_MEDIA_ELEMENT': {
+              deselectMedia(false);
+
+              sendResponse({
+                success: true
+              });
+
+              break;
+            }
+
+            case 'UPDATE_BADGE_STATUS': {
+              updateBadgeStatus(
+                message.mediaId,
+                message.badgeState,
+                message.verdictText
+              );
+
+              sendResponse({
+                success: true
+              });
+
+              break;
+            }
+
+            case 'HIGHLIGHT_MEDIA':
+            case 'highlightMedia': {
+              if (
+                message.mediaId
+              ) {
+                highlightMediaElement(
+                  message.mediaId
+                );
+
+                sendResponse({
+                  success: true
+                });
+
+              } else {
+                sendResponse({
+                  success: false
+                });
+              }
+
+              break;
+            }
+
+            default:
+              sendResponse({
+                success: false,
+                error:
+                  'Unhandled content action'
+              });
+          }
+
+        } catch (error) {
+          if (
+            !isContextInvalidated(
+              error
+            )
+          ) {
+            console.debug(
+              '[FORENSIGHT] Message handler error:',
+              error
+            );
+          }
+
+          try {
+            sendResponse({
+              success: false,
+              error:
+                'Content script unavailable'
+            });
+          } catch {
+            // Context may already be gone.
+          }
         }
-        break;
-      }
 
-      case 'DESELECT_MEDIA_ELEMENT': {
-        deselectMedia(false);
-        sendResponse({ success: true });
-        break;
+        return true;
       }
+    );
+  }
 
-      case 'UPDATE_BADGE_STATUS': {
-        updateBadgeStatus(message.mediaId, message.badgeState, message.verdictText);
-        sendResponse({ success: true });
-        break;
-      }
+  // ============================================================
+  // INITIALIZATION
+  // ============================================================
 
-      case 'HIGHLIGHT_MEDIA':
-      case 'highlightMedia': {
-        if (message.mediaId) {
-          highlightMediaElement(message.mediaId);
-          sendResponse({ success: true });
-        } else {
-          sendResponse({ success: false });
-        }
-        break;
-      }
+  try {
+    setupInteractionListeners();
 
-      default:
-        sendResponse({ error: 'Unhandled content action' });
+    setupSPANavigation();
+
+    startDOMObservation();
+
+    scanAllMedia();
+
+    window.addEventListener(
+      'load',
+      scanAllMedia
+    );
+
+    console.debug(
+      '[FORENSIGHT] Content script initialized'
+    );
+
+  } catch (error) {
+    if (
+      !isContextInvalidated(error)
+    ) {
+      console.error(
+        '[FORENSIGHT] Initialization failed:',
+        error
+      );
     }
-    return true;
-  });
+  }
 
-  // ─── Initialization ─────────────────────────────────────────
-  setupInteractionListeners();
-  setupSPANavigation();
-  startDOMObservation();
-  scanAllMedia();
-  window.addEventListener('load', scanAllMedia);
 })();
