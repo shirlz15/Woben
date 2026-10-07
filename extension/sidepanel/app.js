@@ -391,7 +391,24 @@ function renderReportView(media, backendResult) {
 
 // ─── Data Resolver: Real Backend vs Proven MAIN Demo ────────────
 function resolveReportData(media, backendResult) {
-  // If backend returned valid forensicFeatures & fusion with definitive verdict
+  const mediaItem = {
+    id: media.mediaId,
+    type: (media.modality || 'image').toLowerCase(),
+    src: media.sourceUrl,
+    filename: media.filename,
+    sourceUrl: media.sourceUrl,
+    mediaId: media.mediaId,
+    width: media.width,
+    height: media.height,
+    duration: media.duration,
+  };
+
+  // Demo rule override: photo1 / photo2 always resolves to MANIPULATED with DEMO SIMULATION badge
+  if (isDemoManipulated(mediaItem)) {
+    return generateDemoResult(mediaItem);
+  }
+
+  // Real backend with definitive verdict (for non-demo or authentic media)
   if (
     backendResult &&
     backendResult.success !== false &&
@@ -402,16 +419,7 @@ function resolveReportData(media, backendResult) {
     return transformBackendResult(media, backendResult);
   }
 
-  // Otherwise, use proven MAIN demo simulation
-  const mediaItem = {
-    id: media.mediaId,
-    type: (media.modality || 'image').toLowerCase(),
-    src: media.sourceUrl,
-    filename: media.filename,
-    width: media.width,
-    height: media.height,
-    duration: media.duration,
-  };
+  // Otherwise, use proven MAIN demo simulation (evaluates to AUTHENTIC)
   return generateDemoResult(mediaItem);
 }
 
@@ -514,8 +522,53 @@ function transformBackendResult(media, res) {
   };
 }
 
-// ─── Demo Media Identity Check ──────────────────────────────────
-// Deterministic demo rule: photo1.jpg / photo2.jpg → MANIPULATED.
+// ─── Demo Media Identity Normalizer & Check ─────────────────────
+// Normalize the media identity before matching:
+// 1. URL-decode the value if necessary.
+// 2. Remove query parameters.
+// 3. Remove hash fragments.
+// 4. Extract the final filename/path segment.
+// 5. Remove any duplicate suffix such as "(1)" before the extension.
+// 6. Compare case-insensitively.
+function normalizeMediaBasename(input) {
+  if (!input) return '';
+  let str = String(input).trim();
+  if (!str) return '';
+
+  // 1. URL-decode the value if necessary
+  try {
+    str = decodeURIComponent(str);
+  } catch (_) {}
+
+  // 2. Remove query parameters
+  const queryIdx = str.indexOf('?');
+  if (queryIdx !== -1) {
+    str = str.substring(0, queryIdx);
+  }
+
+  // 3. Remove hash fragments
+  const hashIdx = str.indexOf('#');
+  if (hashIdx !== -1) {
+    str = str.substring(0, hashIdx);
+  }
+
+  // 4. Extract the final filename/path segment
+  const segments = str.split(/[\\/]/).filter(Boolean);
+  let segment = segments.pop() || '';
+  if (!segment) return '';
+
+  // 5. Remove any duplicate suffix such as "(1)", " (1)" before the extension or end
+  segment = segment.replace(/\s*\(\d+\)(?=\.[^.]+$|$)/i, '');
+
+  // Extract basename without extension
+  const dotIdx = segment.lastIndexOf('.');
+  const basename = dotIdx !== -1 ? segment.substring(0, dotIdx) : segment;
+
+  // 6. Compare case-insensitively
+  return basename.toLowerCase().trim();
+}
+
+// Deterministic demo rule: photo1.jpg / photo2.jpg (and variants) → MANIPULATED.
 // Everything else → AUTHENTIC. Click order is irrelevant.
 function isDemoManipulated(mediaItem) {
   if (!mediaItem) return false;
@@ -525,22 +578,15 @@ function isDemoManipulated(mediaItem) {
     mediaItem.id,
     mediaItem.sourceUrl,
     mediaItem.mediaId,
+    mediaItem.url,
+    mediaItem.name,
   ].filter(Boolean);
 
-  // Matches photo1.jpg or photo2.jpg (case-insensitive), resilient to paths and query params
-  const pattern = /(?:^|[\\/_\s-])photo[12]\.(?:jpe?g)(?=[?&#\\/\s]|$)/i;
-
   for (const source of sources) {
-    const str = String(source).trim();
-    if (pattern.test(str)) {
+    const base = normalizeMediaBasename(source);
+    if (base === 'photo1' || base === 'photo2') {
       return true;
     }
-    try {
-      const decoded = decodeURIComponent(str);
-      if (pattern.test(decoded)) {
-        return true;
-      }
-    } catch (_) {}
   }
   return false;
 }
