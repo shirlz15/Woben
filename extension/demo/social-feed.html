@@ -465,6 +465,26 @@
       </div>
     </div>
 
+    <div class="rp-card" style="border: 1px solid #3b82f6; background: #f8fafc;">
+      <div class="rp-title" style="color: #1e3a8a; display: flex; align-items: center; gap: 6px;">
+        <span>🛡️</span> FORENSIGHT Test Controls
+      </div>
+      <div style="font-size: 11px; color: #64748b; margin-bottom: 10px; line-height: 1.4;">
+        Test real-time media observation, dynamic DOM mutations, and SPA routing.
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 6px;">
+        <button id="btn-add-dyn-img" style="padding: 6px 10px; border-radius: 6px; border: 1px solid #cbd5e1; background: #fff; font-size: 11px; font-weight: 600; cursor: pointer; text-align: left;">
+          ➕ Insert Image Post
+        </button>
+        <button id="btn-add-dyn-vid" style="padding: 6px 10px; border-radius: 6px; border: 1px solid #cbd5e1; background: #fff; font-size: 11px; font-weight: 600; cursor: pointer; text-align: left;">
+          🎬 Insert Video Post
+        </button>
+        <button id="btn-test-spa" style="padding: 6px 10px; border-radius: 6px; border: 1px solid #cbd5e1; background: #fff; font-size: 11px; font-weight: 600; cursor: pointer; text-align: left;">
+          🔀 Simulate SPA Navigation
+        </button>
+      </div>
+    </div>
+
     <div class="rp-footer">
       Terms · Privacy · Cookies · About · Accessibility · Ads<br>
       © 2026 Pulse, Inc.
@@ -473,38 +493,93 @@
 
 </div>
 
-<!-- Dynamic post injection after 5 seconds -->
 <script>
+// Auto dynamic post injection after 5 seconds
 setTimeout(() => {
+  insertDynamicImage('Kevin Liu', 'pulse-dynamic-late', 'Just spotted this — anyone else seeing this pop up in their feed? 🤨');
+}, 5000);
+
+let dynCounter = 1;
+
+function insertDynamicImage(author = 'Dynamic User', seed = 'pulse-dyn', caption = 'Freshly posted media update.') {
   const feed = document.querySelector('.feed');
   if (!feed) return;
-  const dynamicPost = document.createElement('article');
-  dynamicPost.className = 'post';
-  dynamicPost.innerHTML = `
+  const post = document.createElement('article');
+  post.className = 'post';
+  post.innerHTML = `
     <div class="post-head">
-      <div class="post-avatar" style="background:linear-gradient(135deg,#14b8a6,#0d9488)">K</div>
+      <div class="post-avatar" style="background:linear-gradient(135deg,#14b8a6,#0d9488)">${author[0]}</div>
       <div class="post-meta">
-        <div class="post-name">Kevin Liu</div>
-        <div class="post-time">Just now · Public</div>
+        <div class="post-name">${author}</div>
+        <div class="post-time">Just now · Dynamic</div>
       </div>
       <button class="post-more">⋯</button>
     </div>
     <div class="post-body">
-      <p class="post-text">Just spotted this — anyone else seeing this pop up in their feed? 🤨</p>
+      <p class="post-text">${caption}</p>
     </div>
     <div class="post-media">
-      <img src="https://picsum.photos/seed/pulse-dynamic-late/640/400" alt="Trending image" crossorigin="anonymous" loading="lazy" />
+      <img src="https://picsum.photos/seed/${seed}-${dynCounter++}/640/400" alt="Dynamic image" crossorigin="anonymous" loading="lazy" />
       <div class="post-media-overlay"></div>
     </div>
     <div class="post-actions">
-      <button class="post-action-btn"><span class="icon">♡</span> 12</button>
-      <button class="post-action-btn"><span class="icon">💬</span> 3</button>
+      <button class="post-action-btn"><span class="icon">♡</span> 1</button>
+      <button class="post-action-btn"><span class="icon">💬</span> 0</button>
       <button class="post-action-btn"><span class="icon">↗</span> Share</button>
-      <button class="post-action-btn" style="margin-left:auto"><span class="icon">🔖</span></button>
     </div>
   `;
-  feed.insertBefore(dynamicPost, feed.children[2]);
-}, 5000);
+  feed.insertBefore(post, feed.children[1] || null);
+}
+
+function insertDynamicVideo() {
+  const feed = document.querySelector('.feed');
+  if (!feed) return;
+  const post = document.createElement('article');
+  post.className = 'post';
+  post.innerHTML = `
+    <div class="post-head">
+      <div class="post-avatar" style="background:linear-gradient(135deg,#a855f7,#6366f1)">V</div>
+      <div class="post-meta">
+        <div class="post-name">Live Cam Stream #${dynCounter}</div>
+        <div class="post-time">Live now · Video</div>
+      </div>
+      <button class="post-more">⋯</button>
+    </div>
+    <div class="post-body">
+      <p class="post-text">New stream uploaded dynamically into DOM. Test real-time video detection and play-to-select.</p>
+    </div>
+    <div class="post-media">
+      <video controls preload="metadata" poster="https://picsum.photos/seed/pulse-dyn-vid-${dynCounter++}/640/360">
+        <source src="https://www.w3schools.com/html/mov_bbb.mp4" type="video/mp4">
+      </video>
+    </div>
+    <div class="post-actions">
+      <button class="post-action-btn"><span class="icon">♡</span> 5</button>
+      <button class="post-action-btn"><span class="icon">💬</span> 2</button>
+      <button class="post-action-btn"><span class="icon">↗</span> Share</button>
+    </div>
+  `;
+  feed.insertBefore(post, feed.children[1] || null);
+}
+
+// Button event listeners
+document.getElementById('btn-add-dyn-img')?.addEventListener('click', () => {
+  insertDynamicImage('Alex Morgan', 'pulse-manual-img', 'Manual dynamic image inserted into feed! Check FORENSIGHT inventory.');
+});
+
+document.getElementById('btn-add-dyn-vid')?.addEventListener('click', () => {
+  insertDynamicVideo();
+});
+
+document.getElementById('btn-test-spa')?.addEventListener('click', () => {
+  // Push state to simulate SPA navigation
+  history.pushState({ page: 'explore' }, 'Explore Feed', '/feed/explore');
+  document.querySelector('.feed').insertAdjacentHTML('afterbegin', `
+    <div style="background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; padding: 10px 14px; border-radius: 12px; margin-bottom: 16px; font-size: 13px; font-weight: 500;">
+      🔀 Navigated to Explore View via history.pushState(). Media reconciled.
+    </div>
+  `);
+});
 </script>
 
 </body>

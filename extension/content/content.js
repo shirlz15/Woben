@@ -1,13 +1,16 @@
 /**
- * FORENSIGHT — Content Script
+ * FORENSIGHT — Real-Time Content Script (Phase 1)
  * 
- * Runs on every webpage to:
- * 1. Detect media elements (images, videos, audio)
- * 2. Listen for user interactions (click image, play video/audio)
- * 3. Trigger analysis on interaction
- * 4. Display forensic badges next to analyzed media
- * 5. Observe dynamic DOM changes for new media
+ * Provides:
+ * 1. Real-time media detection (Images, Videos, Audio)
+ * 2. Exact media selection on user interaction (Click Image, Play Video/Audio)
+ * 3. Non-invasive visual highlight on selected media
+ * 4. Real-time badge indicators (DETECTED / READY / SELECTED / RESTRICTED)
+ * 5. Dynamic content observation via MutationObserver
+ * 6. SPA navigation reconciliation
+ * 7. Tab inventory synchronization with service worker and side panel
  */
+
 (function () {
   'use strict';
 
@@ -15,302 +18,572 @@
   window.__FORENSIGHT_INJECTED__ = true;
 
   const BADGE_CLASS = 'forensight-badge';
-  const MIN_IMAGE_SIZE = 80;
-  const MAX_MEDIA_ITEMS = 50;
+  const SELECTED_CLASS = 'forensight-selected-media';
+  const MIN_IMAGE_DIM = 40; // Filter out tiny utility/tracking icons
+  const MAX_MEDIA_ITEMS = 150;
 
-  // ─── Media Registry ─────────────────────────────────────────
-  const mediaRegistry = new Map(); // id → { element, type, src, ... }
-  let mediaCounter = 0;
+  // ─── State & Registries ─────────────────────────────────────
+  const mediaRegistry = new Map(); // mediaId -> MediaRecord
+  let selectedMediaId = null;
+  let elementSequence = 0;
+  let inventoryDebounceTimer = null;
 
-  function registerMedia(element, type) {
-    // Check if already registered
-    if (element.__forensight_id) return element.__forensight_id;
-
-    const src = getMediaSrc(element, type);
-    if (!src) return null;
-
-    const id = `fs-${type}-${mediaCounter++}-${hashStr(src)}`;
-    element.__forensight_id = id;
-
-    const info = {
-      id,
-      type,
-      src,
-      element,
-      filename: extractFilename(src),
-      width: element.naturalWidth || element.videoWidth || element.width || null,
-      height: element.naturalHeight || element.videoHeight || element.height || null,
-      duration: element.duration || null,
-      alt: element.alt || '',
-      analyzed: false,
-      result: null,
-    };
-
-    mediaRegistry.set(id, info);
-    return id;
-  }
-
-  function getMediaSrc(element, type) {
-    if (type === 'image') {
-      return element.currentSrc || element.src || null;
-    }
-    if (type === 'video' || type === 'audio') {
-      const src = element.currentSrc || element.src;
-      if (src) return src;
-      const source = element.querySelector('source');
-      return source ? source.src : null;
-    }
-    return null;
-  }
-
-  // ─── Media Detection (full scan) ───────────────────────────
-  function detectAllMedia() {
-    const results = [];
-    const seen = new Set();
-
-    // Images
-    document.querySelectorAll('img').forEach(img => {
-      const src = img.currentSrc || img.src;
-      if (!src || src.startsWith('data:image/svg') || seen.has(src)) return;
-      if ((img.naturalWidth || img.width) < MIN_IMAGE_SIZE && (img.naturalHeight || img.height) < MIN_IMAGE_SIZE) return;
-      seen.add(src);
-      const id = registerMedia(img, 'image');
-      if (id) results.push(serializeMedia(mediaRegistry.get(id)));
-    });
-
-    // Videos
-    document.querySelectorAll('video').forEach(video => {
-      const src = getMediaSrc(video, 'video');
-      if (!src || seen.has(src)) return;
-      seen.add(src);
-      const id = registerMedia(video, 'video');
-      if (id) results.push(serializeMedia(mediaRegistry.get(id)));
-    });
-
-    // Audio
-    document.querySelectorAll('audio').forEach(audio => {
-      const src = getMediaSrc(audio, 'audio');
-      if (!src || seen.has(src)) return;
-      seen.add(src);
-      const id = registerMedia(audio, 'audio');
-      if (id) results.push(serializeMedia(mediaRegistry.get(id)));
-    });
-
-    return results.slice(0, MAX_MEDIA_ITEMS);
-  }
-
-  function serializeMedia(info) {
-    if (!info) return null;
-    const { element, analyzed, result, ...data } = info;
-    return data;
-  }
-
-  // ─── Interaction Listeners ──────────────────────────────────
-  function setupInteractionListeners() {
-    // Image click
-    document.addEventListener('click', (e) => {
-      const img = e.target.closest('img');
-      if (!img) return;
-      if ((img.naturalWidth || img.width) < MIN_IMAGE_SIZE) return;
-
-      const id = registerMedia(img, 'image');
-      if (!id) return;
-
-      // Don't block native behavior
-      // Trigger analysis after a tiny delay
-      setTimeout(() => {
-        triggerMediaAnalysis(id);
-      }, 50);
-    }, true);
-
-    // Video play
-    document.addEventListener('play', (e) => {
-      if (e.target.tagName !== 'VIDEO') return;
-      const id = registerMedia(e.target, 'video');
-      if (!id) return;
-      triggerMediaAnalysis(id);
-    }, true);
-
-    // Audio play
-    document.addEventListener('play', (e) => {
-      if (e.target.tagName !== 'AUDIO') return;
-      const id = registerMedia(e.target, 'audio');
-      if (!id) return;
-      triggerMediaAnalysis(id);
-    }, true);
-  }
-
-  // ─── Trigger Analysis ──────────────────────────────────────
-  function triggerMediaAnalysis(mediaId) {
-    const info = mediaRegistry.get(mediaId);
-    if (!info) return;
-
-    // Show "analyzing" badge immediately
-    attachBadge(info, null);
-
-    // Send to background for analysis
-    chrome.runtime.sendMessage({
-      action: 'analyzeInteractedMedia',
-      mediaItem: serializeMedia(info),
-    }, (response) => {
-      if (chrome.runtime.lastError) {
-        console.warn('FORENSIGHT:', chrome.runtime.lastError.message);
-        return;
-      }
-      if (response && response.result) {
-        info.analyzed = true;
-        info.result = response.result;
-        attachBadge(info, response.result);
-      }
-    });
-  }
-
-  // ─── Badge Rendering ────────────────────────────────────────
-  function attachBadge(info, result) {
-    const element = info.element;
-    if (!element) return;
-
-    // Remove existing badge for this media
-    const existingBadge = document.querySelector(`[data-forensight-id="${info.id}"]`);
-    if (existingBadge) existingBadge.remove();
-
-    const badge = document.createElement('div');
-    badge.className = BADGE_CLASS;
-    badge.dataset.forensightId = info.id;
-
-    let statusClass, statusText;
-
-    if (!result) {
-      statusClass = 'forensight-pending';
-      statusText = '🛡 Analyzing...';
-    } else if (result.verdictStatus === 'manipulated') {
-      statusClass = 'forensight-manipulated';
-      statusText = `🛡 Manipulation Likely`;
-    } else if (result.verdictStatus === 'authentic') {
-      statusClass = 'forensight-authentic';
-      statusText = `🛡 Authenticity Likely`;
-    } else if (result.verdictStatus === 'inconclusive') {
-      statusClass = 'forensight-inconclusive';
-      statusText = '🛡 Inconclusive';
-    } else {
-      statusClass = 'forensight-pending';
-      statusText = '🛡 Unavailable';
-    }
-
-    badge.classList.add(statusClass);
-    badge.innerHTML = `<span class="forensight-badge-text">${statusText}</span>`;
-
-    if (result && result.isDemo) {
-      badge.innerHTML += `<span class="forensight-badge-demo">DEMO</span>`;
-    }
-
-    badge.addEventListener('click', (e) => {
-      e.stopPropagation();
-      e.preventDefault();
-      chrome.runtime.sendMessage({ action: 'badgeClicked', mediaId: info.id });
-    });
-
-    // Find positioning parent
-    let parent;
-    if (info.type === 'audio') {
-      parent = element.closest('.post-audio') || element.parentElement;
-    } else {
-      parent = element.closest('.post-media') || element.parentElement;
-    }
-    if (!parent) return;
-
-    const parentPosition = getComputedStyle(parent).position;
-    if (parentPosition === 'static') parent.style.position = 'relative';
-
-    parent.appendChild(badge);
-  }
-
-  // ─── Bulk Badge Update (for full tab scan) ─────────────────
-  function updateBadgeForMedia(mediaId, result) {
-    const info = mediaRegistry.get(mediaId);
-    if (!info) return;
-    info.analyzed = true;
-    info.result = result;
-    attachBadge(info, result);
-  }
-
-  // ─── MutationObserver ───────────────────────────────────────
-  let observer = null;
-  function startObserving() {
-    if (observer) return;
-    observer = new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        for (const node of mutation.addedNodes) {
-          if (node.nodeType !== 1) continue;
-          // Register new media elements
-          if (node.tagName === 'IMG') registerMedia(node, 'image');
-          if (node.tagName === 'VIDEO') registerMedia(node, 'video');
-          if (node.tagName === 'AUDIO') registerMedia(node, 'audio');
-          if (node.querySelectorAll) {
-            node.querySelectorAll('img').forEach(img => registerMedia(img, 'image'));
-            node.querySelectorAll('video').forEach(v => registerMedia(v, 'video'));
-            node.querySelectorAll('audio').forEach(a => registerMedia(a, 'audio'));
-          }
-        }
-      }
-    });
-    observer.observe(document.body, { childList: true, subtree: true });
-  }
-
-  // ─── Message Listener ───────────────────────────────────────
-  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    switch (message.action) {
-      case 'detectMedia': {
-        const media = detectAllMedia();
-        startObserving();
-        sendResponse({ media });
-        break;
-      }
-      case 'updateBadge': {
-        updateBadgeForMedia(message.mediaId, message.result);
-        sendResponse({ success: true });
-        break;
-      }
-      case 'highlightMedia': {
-        const info = mediaRegistry.get(message.mediaId);
-        if (info && info.element) {
-          info.element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          const el = info.element;
-          const orig = el.style.outline;
-          el.style.outline = '3px solid #3b82f6';
-          el.style.outlineOffset = '2px';
-          setTimeout(() => { el.style.outline = orig; el.style.outlineOffset = ''; }, 2500);
-        }
-        sendResponse({ success: true });
-        break;
-      }
-      default:
-        sendResponse({ error: 'Unknown content action' });
-    }
-    return true;
-  });
-
-  // ─── Utilities ──────────────────────────────────────────────
+  // ─── ID Generation & Hashing ────────────────────────────────
   function hashStr(str) {
     let h = 0;
-    for (let i = 0; i < str.length; i++) h = ((h << 5) - h + str.charCodeAt(i)) | 0;
+    const s = str || '';
+    for (let i = 0; i < s.length; i++) {
+      h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+    }
     return Math.abs(h).toString(36).substring(0, 6);
   }
 
   function extractFilename(url) {
-    try { return new URL(url, window.location.href).pathname.split('/').pop() || 'unknown'; }
-    catch { return 'unknown'; }
+    if (!url) return 'unknown_media';
+    try {
+      const parsed = new URL(url, window.location.href);
+      const name = parsed.pathname.split('/').filter(Boolean).pop();
+      return name || parsed.hostname || 'media';
+    } catch {
+      return 'media';
+    }
   }
 
-  // ─── Initialize ─────────────────────────────────────────────
-  setupInteractionListeners();
-  startObserving();
+  function checkAccessRestriction(element, modality, src) {
+    if (!src) return { isRestricted: true, reason: 'no-source' };
+    
+    // Blob URLs that may expire or have restricted buffer access
+    if (src.startsWith('blob:')) {
+      return { isRestricted: false, reason: null }; // Blobs are valid local URLs in page
+    }
 
-  // Register all existing media on page load
-  document.querySelectorAll('img').forEach(img => {
-    if ((img.naturalWidth || img.width) >= MIN_IMAGE_SIZE) registerMedia(img, 'image');
+    // DRM / Encrypted Media check
+    if (element.mediaKeys) {
+      return { isRestricted: true, reason: 'drm-protected' };
+    }
+
+    // Cross-origin check for possible canvas tainting
+    try {
+      const srcUrl = new URL(src, window.location.href);
+      if (srcUrl.origin !== window.location.origin) {
+        // Cross-origin: if no crossorigin attribute on img, canvas may be tainted
+        if (modality === 'image' && !element.crossOrigin) {
+          // Flagged for informational awareness, but still accessible for viewing
+          return { isRestricted: false, reason: 'cross-origin-no-cors' };
+        }
+      }
+    } catch {
+      // Invalid URL
+    }
+
+    return { isRestricted: false, reason: null };
+  }
+
+  function getMediaSrc(element, modality) {
+    if (modality === 'image') {
+      return element.currentSrc || element.src || element.getAttribute('src') || null;
+    }
+    if (modality === 'video' || modality === 'audio') {
+      const direct = element.currentSrc || element.src;
+      if (direct) return direct;
+      const srcEl = element.querySelector('source');
+      return srcEl ? (srcEl.src || srcEl.getAttribute('src')) : null;
+    }
+    return null;
+  }
+
+  // ─── Register or Update Media ───────────────────────────────
+  function registerMedia(element, modality) {
+    if (!element) return null;
+
+    // Check if element has already been registered
+    let id = element.__forensight_id;
+    const src = getMediaSrc(element, modality);
+
+    // Filter out transparent 1x1 pixels or SVGs for images
+    if (modality === 'image') {
+      if (!src || src.startsWith('data:image/svg')) return null;
+      const w = element.naturalWidth || element.width || element.clientWidth || 0;
+      const h = element.naturalHeight || element.height || element.clientHeight || 0;
+      // If loaded and smaller than min dimension, skip
+      if (element.complete && w > 0 && h > 0 && (w < MIN_IMAGE_DIM || h < MIN_IMAGE_DIM)) {
+        return null;
+      }
+    }
+
+    if (!id) {
+      elementSequence++;
+      const srcHash = hashStr(src || `${modality}-${elementSequence}`);
+      id = `fs-${modality}-${elementSequence}-${srcHash}`;
+      element.__forensight_id = id;
+    }
+
+    const { isRestricted, reason } = checkAccessRestriction(element, modality, src);
+
+    const record = mediaRegistry.get(id) || {
+      mediaId: id,
+      modality,
+      elementType: element.tagName,
+      detectedAt: new Date().toISOString(),
+      element,
+    };
+
+    // Update dynamic properties
+    record.sourceUrl = src;
+    record.filename = extractFilename(src);
+    record.width = element.naturalWidth || element.videoWidth || element.clientWidth || 0;
+    record.height = element.naturalHeight || element.videoHeight || element.clientHeight || 0;
+    record.duration = element.duration && !isNaN(element.duration) ? element.duration : 0;
+    record.alt = element.alt || '';
+    record.isRestricted = isRestricted;
+    record.restrictionReason = reason;
+    record.state = isRestricted ? 'restricted' : (id === selectedMediaId ? 'selected' : 'detected');
+
+    mediaRegistry.set(id, record);
+
+    // Attach or update badge
+    attachBadge(record);
+
+    return id;
+  }
+
+  // ─── Badge Management ───────────────────────────────────────
+  function attachBadge(record) {
+    const element = record.element;
+    if (!element || !document.contains(element)) return;
+
+    let badge = document.querySelector(`[data-forensight-id="${record.mediaId}"]`);
+    if (!badge) {
+      badge = document.createElement('div');
+      badge.className = BADGE_CLASS;
+      badge.dataset.forensightId = record.mediaId;
+
+      badge.addEventListener('click', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        selectMedia(record.mediaId, true);
+      });
+
+      // Find positioning parent
+      let parent = null;
+      if (record.modality === 'audio') {
+        parent = element.closest('.post-audio') || element.parentElement;
+      } else {
+        parent = element.closest('.post-media') || element.parentElement;
+      }
+
+      if (parent) {
+        const computed = window.getComputedStyle(parent);
+        if (computed.position === 'static') {
+          parent.style.position = 'relative';
+        }
+        parent.appendChild(badge);
+      }
+    }
+
+    // Determine badge state & text
+    badge.className = BADGE_CLASS;
+    let dotClass = 'forensight-badge-dot';
+    let label = 'READY';
+
+    if (record.isRestricted) {
+      badge.classList.add('forensight-restricted');
+      label = 'RESTRICTED';
+    } else if (record.mediaId === selectedMediaId) {
+      badge.classList.add('forensight-selected');
+      label = 'SELECTED';
+    } else {
+      badge.classList.add('forensight-ready');
+      label = 'READY';
+    }
+
+    badge.innerHTML = `
+      <span class="${dotClass}"></span>
+      <span class="forensight-badge-type">${record.modality}</span>
+      <span class="forensight-badge-text">FORENSIGHT · ${label}</span>
+    `;
+  }
+
+  // ─── Selection Management ───────────────────────────────────
+  function selectMedia(mediaId, shouldNotifyBackground = true) {
+    if (!mediaId) return;
+    const record = mediaRegistry.get(mediaId);
+    if (!record || !record.element) return;
+
+    // Remove previous selection highlight
+    if (selectedMediaId && selectedMediaId !== mediaId) {
+      const prev = mediaRegistry.get(selectedMediaId);
+      if (prev && prev.element) {
+        prev.element.classList.remove(SELECTED_CLASS);
+        prev.element.classList.remove('forensight-pulse-highlight');
+        prev.state = prev.isRestricted ? 'restricted' : 'detected';
+        attachBadge(prev);
+      }
+    }
+
+    // Apply new selection
+    selectedMediaId = mediaId;
+    record.state = record.isRestricted ? 'restricted' : 'ready';
+    record.element.classList.add(SELECTED_CLASS);
+    attachBadge(record);
+
+    if (shouldNotifyBackground) {
+      chrome.runtime.sendMessage({
+        action: 'MEDIA_SELECTED',
+        payload: serializeMedia(record),
+      }).catch(() => {});
+    }
+  }
+
+  function deselectMedia(shouldNotifyBackground = true) {
+    if (!selectedMediaId) return;
+    const prev = mediaRegistry.get(selectedMediaId);
+    if (prev && prev.element) {
+      prev.element.classList.remove(SELECTED_CLASS);
+      prev.element.classList.remove('forensight-pulse-highlight');
+      prev.state = prev.isRestricted ? 'restricted' : 'detected';
+      attachBadge(prev);
+    }
+    selectedMediaId = null;
+
+    if (shouldNotifyBackground) {
+      chrome.runtime.sendMessage({
+        action: 'MEDIA_DESELECTED',
+      }).catch(() => {});
+    }
+  }
+
+  function highlightMediaElement(mediaId) {
+    const record = mediaRegistry.get(mediaId);
+    if (!record || !record.element) return;
+
+    record.element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    record.element.classList.add('forensight-pulse-highlight');
+    setTimeout(() => {
+      if (record.element) {
+        record.element.classList.remove('forensight-pulse-highlight');
+      }
+    }, 2200);
+  }
+
+  // ─── Serialization ──────────────────────────────────────────
+  function serializeMedia(record) {
+    if (!record) return null;
+    return {
+      mediaId: record.mediaId,
+      modality: record.modality,
+      sourceUrl: record.sourceUrl,
+      elementType: record.elementType,
+      width: record.width,
+      height: record.height,
+      duration: record.duration,
+      detectedAt: record.detectedAt,
+      state: record.state,
+      filename: record.filename,
+      isRestricted: record.isRestricted,
+      restrictionReason: record.restrictionReason,
+      alt: record.alt,
+    };
+  }
+
+  function getSerializedInventory() {
+    cleanStaleMedia();
+    const inventory = [];
+    for (const record of mediaRegistry.values()) {
+      inventory.push(serializeMedia(record));
+    }
+    return inventory.slice(0, MAX_MEDIA_ITEMS);
+  }
+
+  function getInventoryCounts() {
+    let images = 0;
+    let videos = 0;
+    let audio = 0;
+    for (const record of mediaRegistry.values()) {
+      if (!document.contains(record.element)) continue;
+      if (record.modality === 'image') images++;
+      else if (record.modality === 'video') videos++;
+      else if (record.modality === 'audio') audio++;
+    }
+    return {
+      images,
+      videos,
+      audio,
+      total: images + videos + audio,
+    };
+  }
+
+  function cleanStaleMedia() {
+    for (const [id, record] of mediaRegistry.entries()) {
+      if (!record.element || !document.contains(record.element)) {
+        // Remove badge
+        const b = document.querySelector(`[data-forensight-id="${id}"]`);
+        if (b) b.remove();
+        mediaRegistry.delete(id);
+        if (selectedMediaId === id) {
+          selectedMediaId = null;
+        }
+      }
+    }
+  }
+
+  // ─── Inventory Synchronization (Debounced) ──────────────────
+  function scheduleInventorySync() {
+    if (inventoryDebounceTimer) clearTimeout(inventoryDebounceTimer);
+    inventoryDebounceTimer = setTimeout(() => {
+      syncInventoryNow();
+    }, 150);
+  }
+
+  function syncInventoryNow() {
+    const inventory = getSerializedInventory();
+    const counts = getInventoryCounts();
+    const selectedRecord = selectedMediaId ? mediaRegistry.get(selectedMediaId) : null;
+
+    chrome.runtime.sendMessage({
+      action: 'MEDIA_INVENTORY_UPDATED',
+      payload: {
+        inventory,
+        counts,
+        selectedMediaId,
+        selectedMedia: serializeMedia(selectedRecord),
+        url: window.location.href,
+        title: document.title,
+      },
+    }).catch(() => {});
+  }
+
+  // ─── Scan All Elements ──────────────────────────────────────
+  function scanAllMedia() {
+    // Images
+    document.querySelectorAll('img').forEach((img) => {
+      registerMedia(img, 'image');
+    });
+
+    // Videos
+    document.querySelectorAll('video').forEach((v) => {
+      registerMedia(v, 'video');
+    });
+
+    // Audio
+    document.querySelectorAll('audio').forEach((a) => {
+      registerMedia(a, 'audio');
+    });
+
+    scheduleInventorySync();
+  }
+
+  // ─── Interaction Listeners ──────────────────────────────────
+  function setupInteractionListeners() {
+    // 1. Image Click
+    document.addEventListener('click', (e) => {
+      const img = e.target.closest('img');
+      if (!img) return;
+
+      const id = registerMedia(img, 'image');
+      if (id) {
+        selectMedia(id, true);
+      }
+    }, true);
+
+    // 2. Video Click & Play
+    document.addEventListener('play', (e) => {
+      if (e.target.tagName !== 'VIDEO') return;
+      const id = registerMedia(e.target, 'video');
+      if (id) {
+        selectMedia(id, true);
+      }
+    }, true);
+
+    document.addEventListener('click', (e) => {
+      const video = e.target.closest('video');
+      if (!video) return;
+      const id = registerMedia(video, 'video');
+      if (id) {
+        selectMedia(id, true);
+      }
+    }, true);
+
+    // 3. Audio Play & Click
+    document.addEventListener('play', (e) => {
+      if (e.target.tagName !== 'AUDIO') return;
+      const id = registerMedia(e.target, 'audio');
+      if (id) {
+        selectMedia(id, true);
+      }
+    }, true);
+
+    document.addEventListener('click', (e) => {
+      const audio = e.target.closest('audio') || (e.target.closest('.post-audio') ? e.target.closest('.post-audio').querySelector('audio') : null);
+      if (!audio) return;
+      const id = registerMedia(audio, 'audio');
+      if (id) {
+        selectMedia(id, true);
+      }
+    }, true);
+
+    // 4. Metadata updates (dimensions, duration)
+    document.addEventListener('loadedmetadata', (e) => {
+      const el = e.target;
+      if (el.tagName === 'VIDEO') {
+        const id = registerMedia(el, 'video');
+        if (id && id === selectedMediaId) {
+          syncInventoryNow();
+        }
+      } else if (el.tagName === 'AUDIO') {
+        const id = registerMedia(el, 'audio');
+        if (id && id === selectedMediaId) {
+          syncInventoryNow();
+        }
+      }
+    }, true);
+  }
+
+  // ─── MutationObserver (Dynamic Media Detection) ─────────────
+  let domObserver = null;
+  function startDOMObservation() {
+    if (domObserver) return;
+
+    domObserver = new MutationObserver((mutations) => {
+      let hasChanges = false;
+
+      for (const m of mutations) {
+        if (m.type === 'childList') {
+          // Check added nodes
+          for (const node of m.addedNodes) {
+            if (node.nodeType !== 1) continue;
+            if (node.classList && node.classList.contains(BADGE_CLASS)) continue;
+
+            if (node.tagName === 'IMG') { registerMedia(node, 'image'); hasChanges = true; }
+            if (node.tagName === 'VIDEO') { registerMedia(node, 'video'); hasChanges = true; }
+            if (node.tagName === 'AUDIO') { registerMedia(node, 'audio'); hasChanges = true; }
+
+            if (node.querySelectorAll) {
+              node.querySelectorAll('img').forEach((img) => { registerMedia(img, 'image'); hasChanges = true; });
+              node.querySelectorAll('video').forEach((v) => { registerMedia(v, 'video'); hasChanges = true; });
+              node.querySelectorAll('audio').forEach((a) => { registerMedia(a, 'audio'); hasChanges = true; });
+            }
+          }
+
+          // Check removed nodes
+          if (m.removedNodes.length > 0) {
+            hasChanges = true;
+          }
+        } else if (m.type === 'attributes') {
+          const target = m.target;
+          if (target.tagName === 'IMG') { registerMedia(target, 'image'); hasChanges = true; }
+          if (target.tagName === 'VIDEO') { registerMedia(target, 'video'); hasChanges = true; }
+          if (target.tagName === 'AUDIO') { registerMedia(target, 'audio'); hasChanges = true; }
+        }
+      }
+
+      if (hasChanges) {
+        scheduleInventorySync();
+      }
+    });
+
+    domObserver.observe(document.documentElement || document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['src', 'srcset', 'poster'],
+    });
+  }
+
+  // ─── SPA Navigation Handling ────────────────────────────────
+  function setupSPANavigation() {
+    const handleNav = () => {
+      setTimeout(() => {
+        scanAllMedia();
+      }, 100);
+    };
+
+    window.addEventListener('popstate', handleNav);
+    window.addEventListener('hashchange', handleNav);
+
+    // Monkey-patch pushState & replaceState
+    const origPush = history.pushState;
+    if (origPush) {
+      history.pushState = function (...args) {
+        const ret = origPush.apply(this, args);
+        handleNav();
+        return ret;
+      };
+    }
+
+    const origReplace = history.replaceState;
+    if (origReplace) {
+      history.replaceState = function (...args) {
+        const ret = origReplace.apply(this, args);
+        handleNav();
+        return ret;
+      };
+    }
+  }
+
+  // ─── Chrome Message Listener ────────────────────────────────
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    switch (message.action) {
+      case 'SCAN_TAB_MEDIA':
+      case 'detectMedia': {
+        scanAllMedia();
+        const inventory = getSerializedInventory();
+        const counts = getInventoryCounts();
+        sendResponse({ inventory, counts, selectedMediaId });
+        break;
+      }
+
+      case 'SELECT_MEDIA_ELEMENT': {
+        if (message.mediaId) {
+          selectMedia(message.mediaId, false);
+          highlightMediaElement(message.mediaId);
+          sendResponse({ success: true });
+        } else {
+          sendResponse({ success: false, error: 'No mediaId provided' });
+        }
+        break;
+      }
+
+      case 'DESELECT_MEDIA_ELEMENT': {
+        deselectMedia(false);
+        sendResponse({ success: true });
+        break;
+      }
+
+      case 'HIGHLIGHT_MEDIA':
+      case 'highlightMedia': {
+        if (message.mediaId) {
+          highlightMediaElement(message.mediaId);
+          sendResponse({ success: true });
+        } else {
+          sendResponse({ success: false });
+        }
+        break;
+      }
+
+      case 'GET_ACTIVE_INVENTORY': {
+        sendResponse({
+          inventory: getSerializedInventory(),
+          counts: getInventoryCounts(),
+          selectedMediaId,
+        });
+        break;
+      }
+
+      default:
+        sendResponse({ error: 'Unhandled content action' });
+    }
+    return true;
   });
-  document.querySelectorAll('video').forEach(v => registerMedia(v, 'video'));
-  document.querySelectorAll('audio').forEach(a => registerMedia(a, 'audio'));
 
+  // ─── Initialization ─────────────────────────────────────────
+  setupInteractionListeners();
+  setupSPANavigation();
+  startDOMObservation();
+
+  // Scan immediately and after DOM loads
+  scanAllMedia();
+  window.addEventListener('load', () => {
+    scanAllMedia();
+  });
 })();
