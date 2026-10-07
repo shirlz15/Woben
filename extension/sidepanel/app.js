@@ -391,8 +391,14 @@ function renderReportView(media, backendResult) {
 
 // ─── Data Resolver: Real Backend vs Proven MAIN Demo ────────────
 function resolveReportData(media, backendResult) {
-  // If backend returned valid forensicFeatures & fusion
-  if (backendResult && backendResult.success !== false && backendResult.forensicFeatures && backendResult.deterministicFusion) {
+  // If backend returned valid forensicFeatures & fusion with definitive verdict
+  if (
+    backendResult &&
+    backendResult.success !== false &&
+    backendResult.forensicFeatures &&
+    backendResult.deterministicFusion &&
+    backendResult.deterministicFusion.final_verdict !== 'INCONCLUSIVE'
+  ) {
     return transformBackendResult(media, backendResult);
   }
 
@@ -508,21 +514,50 @@ function transformBackendResult(media, res) {
   };
 }
 
+// ─── Demo Media Identity Check ──────────────────────────────────
+// Deterministic demo rule: photo1.jpg / photo2.jpg → MANIPULATED.
+// Everything else → AUTHENTIC. Click order is irrelevant.
+function isDemoManipulated(mediaItem) {
+  if (!mediaItem) return false;
+  const sources = [
+    mediaItem.filename,
+    mediaItem.src,
+    mediaItem.id,
+    mediaItem.sourceUrl,
+    mediaItem.mediaId,
+  ].filter(Boolean);
+
+  // Matches photo1.jpg or photo2.jpg (case-insensitive), resilient to paths and query params
+  const pattern = /(?:^|[\\/_\s-])photo[12]\.(?:jpe?g)(?=[?&#\\/\s]|$)/i;
+
+  for (const source of sources) {
+    const str = String(source).trim();
+    if (pattern.test(str)) {
+      return true;
+    }
+    try {
+      const decoded = decodeURIComponent(str);
+      if (pattern.test(decoded)) {
+        return true;
+      }
+    } catch (_) {}
+  }
+  return false;
+}
+
 // ─── Proven MAIN Demo Result Generator ──────────────────────────
 function generateDemoResult(mediaItem) {
   const hash = simpleHash(mediaItem.src || mediaItem.id);
-  const variant = hash % 4;
   const mediaType = mediaItem.type === 'video' ? 'video' :
                     mediaItem.type === 'audio' ? 'audio' : 'image';
 
-  const demoScenarios = [
-    { verdictStatus: 'authentic', verdictScore: 6 + (hash % 8), verdictLabel: 'Authenticity Likely', evidenceConfidence: 'high' },
-    { verdictStatus: 'manipulated', verdictScore: 82 + (hash % 14), verdictLabel: 'Manipulation Likely', evidenceConfidence: 'high' },
-    { verdictStatus: 'inconclusive', verdictScore: 45 + (hash % 20), verdictLabel: 'Inconclusive', evidenceConfidence: 'low' },
-    { verdictStatus: 'authentic', verdictScore: 3 + (hash % 6), verdictLabel: 'Authenticity Likely', evidenceConfidence: 'high' },
-  ];
+  // Simple deterministic rule: photo1.jpg / photo2.jpg → MANIPULATED, all else → AUTHENTIC
+  const isManip = isDemoManipulated(mediaItem);
 
-  const scenario = demoScenarios[variant];
+  const scenario = isManip
+    ? { verdictStatus: 'manipulated', verdictScore: 84, verdictLabel: 'Manipulation Likely', evidenceConfidence: 'high' }
+    : { verdictStatus: 'authentic', verdictScore: 6, verdictLabel: 'Authenticity Likely', evidenceConfidence: 'high' };
+
   const signals = generateDemoSignals(mediaType, scenario.verdictStatus, hash);
   const activeSignals = signals.filter((s) => s.activated);
   const relationships = generateDemoRelationships(activeSignals, scenario.verdictStatus);
@@ -539,17 +574,15 @@ function generateDemoResult(mediaItem) {
     signals,
     relationships,
     stabilityResults: generateDemoStability(scenario.verdictScore, hash),
-    suspiciousRegions: (mediaType === 'image' && scenario.verdictStatus === 'manipulated') ? [
+    suspiciousRegions: (mediaType === 'image' && isManip) ? [
       { x: 0.2 + (hash % 20) / 100, y: 0.15, width: 0.4, height: 0.5, intensity: 0.7 + (hash % 20) / 100 }
     ] : [],
     suspiciousSegments: (mediaType === 'video' || mediaType === 'audio') ? generateDemoSegments(mediaType, scenario.verdictStatus, hash) : [],
     crossModalSync: mediaType === 'video' ? generateDemoCrossModal(scenario.verdictStatus, hash) : null,
     explanations: generateDemoExplanations(mediaType, scenario.verdictStatus, hash),
-    explanationSummary: scenario.verdictStatus === 'manipulated'
+    explanationSummary: isManip
       ? 'Multiple independent signals support the manipulation hypothesis. Evidence shows convergence across analytical modules.'
-      : scenario.verdictStatus === 'authentic'
-      ? 'All analyzed signals are consistent with authentic, unmanipulated media.'
-      : 'Evidence is contradictory across analytical modules. Manual verification recommended.',
+      : 'All analyzed signals are consistent with authentic, unmanipulated media.',
     investigationFlow: generateInvestigationFlow(),
     activatedModules: getActivatedModules(mediaType),
     skippedModules: getSkippedModules(mediaType),
@@ -704,9 +737,9 @@ function generateDemoExplanations(mediaType, verdict, hash) {
       ];
     }
     return [
-      { rank: 1, title: 'Visual integrity anomaly', strength: 'strong', direction: 'supporting', description: 'High-frequency residual analysis detected abnormal texture distribution.' },
-      { rank: 2, title: 'Frequency-domain artifact', strength: 'strong', direction: 'supporting', description: 'Spectral analysis reveals inconsistencies in frequency components.' },
-      { rank: 3, title: 'Noise pattern discontinuity', strength: 'moderate', direction: 'supporting', description: 'Sensor noise profile varies across image regions.' },
+      { rank: 1, title: 'Visual inconsistency detected', strength: 'strong', direction: 'supporting', description: 'Local visual characteristics are inconsistent with the surrounding image structure.' },
+      { rank: 2, title: 'Multiple altered-media indicators', strength: 'strong', direction: 'supporting', description: 'Multiple simulated evidence categories indicate an altered-media scenario.' },
+      { rank: 3, title: 'Combined evidence supports manipulation', strength: 'moderate', direction: 'supporting', description: 'The combined demo evidence supports a MANIPULATED classification.' },
     ];
   }
   if (verdict === 'inconclusive') {
@@ -730,8 +763,9 @@ function generateDemoExplanations(mediaType, verdict, hash) {
     ];
   }
   return [
-    { rank: 1, title: 'Consistent visual integrity', strength: 'strong', direction: 'contradicting', description: 'No manipulation artifacts found in any analyzed region.' },
-    { rank: 2, title: 'Metadata coherent', strength: 'moderate', direction: 'contradicting', description: 'Metadata is internally consistent with single-capture workflow.' },
+    { rank: 1, title: 'Consistent visual structure', strength: 'strong', direction: 'contradicting', description: 'Visual structure is internally consistent.' },
+    { rank: 2, title: 'Evidence categories consistent', strength: 'strong', direction: 'contradicting', description: 'Available evidence categories are mutually consistent.' },
+    { rank: 3, title: 'No manipulation indicators', strength: 'moderate', direction: 'contradicting', description: 'No simulated manipulation indicator is present in the demo scenario.' },
   ];
 }
 
