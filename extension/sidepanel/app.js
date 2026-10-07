@@ -398,6 +398,7 @@ function resolveReportData(media, backendResult) {
     filename: media.filename,
     sourceUrl: media.sourceUrl,
     mediaId: media.mediaId,
+    alt: media.alt,
     width: media.width,
     height: media.height,
     duration: media.duration,
@@ -569,11 +570,12 @@ function normalizeMediaBasename(input) {
 }
 
 // Deterministic demo rule:
-// 1. test.jpg (grey Google Cloud certificate) → MANIPULATED
-// 2. tampered.jpg (tampered handwritten-signature document) → MANIPULATED
-// Everything else → AUTHENTIC. Click order is irrelevant.
-function getDemoManipulatedType(mediaItem) {
-  if (!mediaItem) return null;
+// ONLY the specific tampered handwritten-signature document (Shirley signature document / tampered.jpg)
+// resolves to MANIPULATED.
+// All other media (Google Cloud certificate, LinkedIn classroom image, portrait, normal documents, etc.)
+// resolves to AUTHENTIC.
+function isSpecificSignatureDocument(mediaItem) {
+  if (!mediaItem) return false;
   const sources = [
     mediaItem.filename,
     mediaItem.src,
@@ -582,22 +584,36 @@ function getDemoManipulatedType(mediaItem) {
     mediaItem.mediaId,
     mediaItem.url,
     mediaItem.name,
+    mediaItem.alt,
   ].filter(Boolean);
 
   for (const source of sources) {
+    const raw = String(source).toLowerCase().trim();
     const base = normalizeMediaBasename(source);
-    if (base === 'test' || base === 'photo1') {
-      return 'test';
+
+    // Exact matches on demo basenames for the tampered signature document
+    if (base === 'tampered' || base === 'photo2' || base === '6') {
+      return true;
     }
-    if (base === 'tampered' || base === 'photo2') {
-      return 'tampered';
+    // Specific metadata / filename / URL tokens for the Shirley signature document
+    if (raw.includes('tampered') || raw.includes('shirley')) {
+      return true;
     }
   }
-  return null;
+
+  // Visual/media dimension signature (tampered.jpg is 1153x444, 6.jpg is 749x513)
+  if (
+    (mediaItem.width === 1153 && mediaItem.height === 444) ||
+    (mediaItem.width === 749 && mediaItem.height === 513)
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 function isDemoManipulated(mediaItem) {
-  return Boolean(getDemoManipulatedType(mediaItem));
+  return isSpecificSignatureDocument(mediaItem);
 }
 
 // ─── Proven MAIN Demo Result Generator ──────────────────────────
@@ -606,9 +622,8 @@ function generateDemoResult(mediaItem) {
   const mediaType = mediaItem.type === 'video' ? 'video' :
                     mediaItem.type === 'audio' ? 'audio' : 'image';
 
-  // Deterministic demo rule: test.jpg & tampered.jpg → MANIPULATED, all else → AUTHENTIC
-  const manipType = getDemoManipulatedType(mediaItem);
-  const isManip = Boolean(manipType);
+  // Deterministic demo rule: ONLY this specific signature document is MANIPULATED. All else AUTHENTIC.
+  const isManip = isSpecificSignatureDocument(mediaItem);
 
   const scenario = isManip
     ? { verdictStatus: 'manipulated', verdictScore: 84, verdictLabel: 'Manipulation Likely', evidenceConfidence: 'high' }
@@ -618,14 +633,9 @@ function generateDemoResult(mediaItem) {
   const activeSignals = signals.filter((s) => s.activated);
   const relationships = generateDemoRelationships(activeSignals, scenario.verdictStatus);
 
-  let explanationSummary = 'All analyzed signals are consistent with authentic, unmanipulated media.';
-  if (manipType === 'test') {
-    explanationSummary = 'The certificate exhibits a visible tonal and color-consistency anomaly compared with the expected document appearance. Combined visual evidence supports the manipulated-media demonstration scenario.';
-  } else if (manipType === 'tampered') {
-    explanationSummary = 'Localized visual characteristics around the handwritten signature are inconsistent with the surrounding document structure. The available evidence supports an altered signature region and a manipulated-media classification.';
-  } else if (isManip) {
-    explanationSummary = 'Multiple independent signals support the manipulation hypothesis. Evidence shows convergence across analytical modules.';
-  }
+  const explanationSummary = isManip
+    ? 'Localized visual characteristics around the handwritten signature are inconsistent with the surrounding document structure. The available evidence supports an altered signature region and a manipulated-media classification.'
+    : 'All analyzed signals are consistent with authentic, unmanipulated media.';
 
   return {
     id: `FS-${hash.toString(36).toUpperCase().substring(0, 8)}`,
@@ -640,11 +650,11 @@ function generateDemoResult(mediaItem) {
     relationships,
     stabilityResults: generateDemoStability(scenario.verdictScore, hash),
     suspiciousRegions: (mediaType === 'image' && isManip) ? [
-      { x: 0.2 + (hash % 20) / 100, y: 0.15, width: 0.4, height: 0.5, intensity: 0.7 + (hash % 20) / 100 }
+      { x: 0.45, y: 0.55, width: 0.25, height: 0.2, intensity: 0.88 }
     ] : [],
     suspiciousSegments: (mediaType === 'video' || mediaType === 'audio') ? generateDemoSegments(mediaType, scenario.verdictStatus, hash) : [],
     crossModalSync: mediaType === 'video' ? generateDemoCrossModal(scenario.verdictStatus, hash) : null,
-    explanations: generateDemoExplanations(mediaType, scenario.verdictStatus, hash, manipType),
+    explanations: generateDemoExplanations(mediaType, scenario.verdictStatus, hash),
     explanationSummary,
     investigationFlow: generateInvestigationFlow(),
     activatedModules: getActivatedModules(mediaType),
@@ -671,22 +681,44 @@ function generateDemoSignals(mediaType, verdict, hash) {
   const m = verdict === 'manipulated';
   const inc = verdict === 'inconclusive';
   const dirM = m ? 'supporting' : inc ? 'inconclusive' : 'contradicting';
-  const dirMeta = m ? 'inconclusive' : inc ? 'inconclusive' : 'contradicting';
 
   if (mediaType === 'image') {
+    if (m) {
+      // Required demo evidence presentation for altered signature:
+      // Visual Integrity   → Contradictory
+      // Frequency Analysis → Supporting
+      // Noise / Residual   → Supporting
+      // Metadata           → Uncertain
+      // Compression        → Supporting
+      // Edge / Texture     → Contradictory
+      return [
+        { id: 'visual', type: 'visual', label: 'Visual Integrity', score: 82, direction: 'contradicting', reliability: 'high', activated: true,
+          explanation: 'Detectable artifacts in high-frequency regions near signature suggest localized alteration.' },
+        { id: 'frequency', type: 'frequency', label: 'Frequency Analysis', score: 80, direction: 'supporting', reliability: 'high', activated: true,
+          explanation: 'Frequency-domain artifacts consistent with splicing around the signature boundary.' },
+        { id: 'noise', type: 'noise', label: 'Noise / Residual', score: 76, direction: 'supporting', reliability: 'moderate', activated: true,
+          explanation: 'Residual noise profile around the signature region is discontinuous with the page background.' },
+        { id: 'metadata', type: 'metadata', label: 'Metadata', score: 50, direction: 'inconclusive', reliability: 'moderate', activated: true,
+          explanation: 'Document metadata is unverified or inconclusive.' },
+        { id: 'compression', type: 'compression', label: 'Compression', score: 74, direction: 'supporting', reliability: 'moderate', activated: true,
+          explanation: 'Compression characteristics around the signature box indicate localized re-compression.' },
+        { id: 'edge', type: 'edge', label: 'Edge / Texture', score: 68, direction: 'contradicting', reliability: 'moderate', activated: true,
+          explanation: 'Edge discontinuities detected along the perimeter of the signature placement.' },
+      ];
+    }
     return [
-      { id: 'visual', type: 'visual', label: 'Visual Integrity', score: m ? 84 + (hash % 12) : inc ? 48 + (hash % 18) : 4 + (hash % 7), direction: dirM, reliability: 'high', activated: true,
-        explanation: m ? 'Detectable artifacts in high-frequency regions suggest post-processing.' : inc ? 'Visual features are ambiguous.' : 'No visual manipulation artifacts detected.' },
-      { id: 'frequency', type: 'frequency', label: 'Frequency Analysis', score: m ? 78 + (hash % 10) : inc ? 40 + (hash % 20) : 6 + (hash % 8), direction: dirM, reliability: 'high', activated: true,
-        explanation: m ? 'Frequency-domain artifacts consistent with splicing or inpainting.' : 'Frequency spectrum consistent with camera capture.' },
-      { id: 'noise', type: 'noise', label: 'Noise / Residual', score: m ? 72 + (hash % 15) : inc ? 55 + (hash % 15) : 8 + (hash % 10), direction: m ? 'supporting' : inc ? 'inconclusive' : 'contradicting', reliability: 'moderate', activated: true,
-        explanation: m ? 'Noise pattern discontinuity across image regions.' : 'Noise profile is uniform and consistent.' },
-      { id: 'metadata', type: 'metadata', label: 'Metadata', score: m ? 55 + (hash % 15) : 18 + (hash % 12), direction: dirMeta, reliability: 'moderate', activated: true,
-        explanation: m ? 'Metadata inconsistencies found; editing software signatures detected.' : 'Metadata is internally consistent.' },
-      { id: 'compression', type: 'compression', label: 'Compression', score: m ? 60 + (hash % 12) : 12 + (hash % 10), direction: m ? 'supporting' : 'contradicting', reliability: 'moderate', activated: true,
-        explanation: m ? 'Double-compression artifacts detected.' : 'Single-pass compression consistent with original capture.' },
-      { id: 'edge', type: 'edge', label: 'Edge / Texture', score: m ? 70 + (hash % 12) : inc ? 50 + (hash % 15) : 5 + (hash % 8), direction: dirM, reliability: 'moderate', activated: true,
-        explanation: m ? 'Edge discontinuities found near suspected manipulation boundary.' : 'Edge characteristics are natural.' },
+      { id: 'visual', type: 'visual', label: 'Visual Integrity', score: 4 + (hash % 7), direction: 'contradicting', reliability: 'high', activated: true,
+        explanation: 'No visual manipulation artifacts detected.' },
+      { id: 'frequency', type: 'frequency', label: 'Frequency Analysis', score: 6 + (hash % 8), direction: 'contradicting', reliability: 'high', activated: true,
+        explanation: 'Frequency spectrum consistent with standard document capture.' },
+      { id: 'noise', type: 'noise', label: 'Noise / Residual', score: 8 + (hash % 10), direction: 'contradicting', reliability: 'moderate', activated: true,
+        explanation: 'Noise profile is uniform and consistent.' },
+      { id: 'metadata', type: 'metadata', label: 'Metadata', score: 18 + (hash % 12), direction: 'contradicting', reliability: 'moderate', activated: true,
+        explanation: 'Metadata is internally consistent.' },
+      { id: 'compression', type: 'compression', label: 'Compression', score: 12 + (hash % 10), direction: 'contradicting', reliability: 'moderate', activated: true,
+        explanation: 'Single-pass compression consistent with original capture.' },
+      { id: 'edge', type: 'edge', label: 'Edge / Texture', score: 5 + (hash % 8), direction: 'contradicting', reliability: 'moderate', activated: true,
+        explanation: 'Edge characteristics are natural.' },
     ];
   }
 
@@ -782,7 +814,7 @@ function generateDemoCrossModal(verdict, hash) {
   };
 }
 
-function generateDemoExplanations(mediaType, verdict, hash, manipType) {
+function generateDemoExplanations(mediaType, verdict, hash) {
   if (verdict === 'manipulated') {
     if (mediaType === 'video') {
       return [
@@ -799,24 +831,10 @@ function generateDemoExplanations(mediaType, verdict, hash, manipType) {
         { rank: 3, title: 'Temporal discontinuity', strength: 'moderate', direction: 'supporting', description: 'Waveform shows segment boundaries with unnatural transitions.' },
       ];
     }
-    if (manipType === 'test') {
-      return [
-        { rank: 1, title: 'Tonal consistency anomaly', strength: 'strong', direction: 'supporting', description: 'Noticeable color tone and background luminance shift across the certificate surface.' },
-        { rank: 2, title: 'Frequency domain variation', strength: 'strong', direction: 'supporting', description: 'Spectral analysis exhibits distribution characteristics atypical of standard digital certificates.' },
-        { rank: 3, title: 'Multiple altered-media indicators', strength: 'moderate', direction: 'supporting', description: 'Combined visual evidence supports the manipulated-media demonstration scenario.' },
-      ];
-    }
-    if (manipType === 'tampered') {
-      return [
-        { rank: 1, title: 'Signature boundary anomaly', strength: 'strong', direction: 'supporting', description: 'Localized visual characteristics around the handwritten signature show boundary discontinuities with the surrounding paper texture.' },
-        { rank: 2, title: 'Sensor noise discontinuity', strength: 'strong', direction: 'supporting', description: 'Residual sensor noise profile around signature differs from page background.' },
-        { rank: 3, title: 'Evidence supports altered signature', strength: 'moderate', direction: 'supporting', description: 'The available evidence supports an altered signature region and a manipulated-media classification.' },
-      ];
-    }
     return [
-      { rank: 1, title: 'Visual inconsistency detected', strength: 'strong', direction: 'supporting', description: 'Local visual characteristics are inconsistent with the surrounding image structure.' },
-      { rank: 2, title: 'Multiple altered-media indicators', strength: 'strong', direction: 'supporting', description: 'Multiple simulated evidence categories indicate an altered-media scenario.' },
-      { rank: 3, title: 'Combined evidence supports manipulation', strength: 'moderate', direction: 'supporting', description: 'The combined demo evidence supports a MANIPULATED classification.' },
+      { rank: 1, title: 'Signature boundary anomaly', strength: 'strong', direction: 'supporting', description: 'Localized visual characteristics around the handwritten signature show boundary discontinuities with the surrounding paper texture.' },
+      { rank: 2, title: 'Sensor noise discontinuity', strength: 'strong', direction: 'supporting', description: 'Residual sensor noise profile around signature differs from page background.' },
+      { rank: 3, title: 'Evidence supports altered signature', strength: 'moderate', direction: 'supporting', description: 'The available evidence supports an altered signature region and a manipulated-media classification.' },
     ];
   }
   if (verdict === 'inconclusive') {
