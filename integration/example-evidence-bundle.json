@@ -1,0 +1,101 @@
+{
+  "_comment": "EXAMPLE TEST FIXTURE ONLY: This file contains synthetic test data illustrating schema conformance. These values are NOT real forensic accuracy measurements and MUST NOT be presented as actual forensic results.",
+  "schema_version": "1.0.0",
+  "bundle_id": "bundle-test-example-0001",
+  "created_at": "2026-10-07T06:30:00Z",
+  "media": {
+    "media_id": "media-element-test-101",
+    "modality": "IMAGE",
+    "mime_type": "image/jpeg",
+    "width": 1280,
+    "height": 720,
+    "duration_ms": null,
+    "source": "https://example.org/test-fixtures/sample-photo.jpg",
+    "access_status": "ACCESSIBLE"
+  },
+  "forensic_ml": {
+    "available": true,
+    "model": "forensight-ml-spatial-v1-mock-test",
+    "probabilities": {
+      "real": 0.08,
+      "manipulated": 0.14,
+      "ai_generated": 0.78
+    },
+    "forensic_features": {
+      "jpeg": {
+        "quantization_table_match": "standard_ijg_q75",
+        "estimated_quality": 75,
+        "double_compression_detected": false,
+        "blockiness_8x8_score": 0.0142
+      },
+      "noise": {
+        "residual_variance": 0.0031,
+        "quadrant_variance_uniformity": 0.942,
+        "prnu_correlation": 0.048,
+        "noise_snr_db": 34.2
+      },
+      "frequency": {
+        "spectral_rolloff_hz": null,
+        "high_frequency_decay_rate": 2.84,
+        "azimuthal_average_anomaly": 0.612,
+        "grid_peak_energy": 0.185
+      },
+      "edges": {
+        "gradient_mean": 24.6,
+        "gradient_std": 18.2,
+        "boundary_discontinuity_index": 0.071
+      },
+      "texture": {
+        "shannon_entropy": 7.42,
+        "local_binary_pattern_entropy": 0.81,
+        "glcm_contrast": 12.4
+      },
+      "compression": {
+        "codec": "jpeg",
+        "bitrate_kbps": null,
+        "macroblock_jitter": null,
+        "recompression_count_estimate": 1
+      },
+      "metadata": {
+        "has_exif": false,
+        "software_signature": null,
+        "c2pa_manifest_present": false,
+        "c2pa_signature_valid": null,
+        "camera_model": null
+      }
+    }
+  },
+  "gemini": {
+    "available": true,
+    "model": "gemini-1.5-pro-mock-test",
+    "assessment": "AI_GENERATED_LIKELY",
+    "observations": [
+      "Test observation: Inconsistent light source reflection angles across left and right eye pupils.",
+      "Test observation: Background architectural geometry displays non-Euclidean perspective warping.",
+      "Test observation: Hair strand intersections exhibit uncharacteristic blending boundaries."
+    ],
+    "indicators": [
+      "Semantic anomaly: Anatomically improbable five-finger knuckle articulation on left hand.",
+      "Lighting physics inconsistency: Cast shadow direction on ground contradicts primary overhead sun vector."
+    ],
+    "limitations": [
+      "Source image is downsampled from original capture resolution.",
+      "No cryptographic C2PA provenance manifest embedded in file container."
+    ]
+  },
+  "fusion": {
+    "agreement": true,
+    "conflict": false,
+    "final_verdict": "AI_GENERATED",
+    "status": "SUFFICIENT_EVIDENCE",
+    "reasons": [
+      "High-frequency 2D spectral anomaly matches diffusion upsampling signatures in Forensic ML features.",
+      "Independent Gemini multimodal reasoning confirmed physically impossible lighting and anatomical hand deformations.",
+      "Both systems independently corroborate synthetic generation without conflicting signals."
+    ]
+  },
+  "limitations": [
+    "Test fixture data only - not real benchmark accuracy.",
+    "Platform re-encoding may have attenuated fine sensor PRNU noise patterns."
+  ]
+}

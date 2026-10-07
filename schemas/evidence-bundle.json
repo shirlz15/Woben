@@ -1,0 +1,338 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forensight.security/schemas/evidence-bundle.json",
+  "title": "EvidenceBundle",
+  "description": "Standardized interoperability contract unifying deterministic Forensic ML features, Gemini multimodal reasoning, and calibrated decision fusion across images, videos, and audio.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "bundle_id",
+    "created_at",
+    "media",
+    "forensic_ml",
+    "gemini",
+    "fusion"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Semantic version of the EvidenceBundle schema specification.",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "default": "1.0.0"
+    },
+    "bundle_id": {
+      "type": "string",
+      "description": "Unique identifier for this evidence bundle instance (e.g. UUIDv4 or prefixed identifier).",
+      "minLength": 1
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC timestamp of bundle creation."
+    },
+    "media": {
+      "type": "object",
+      "description": "Physical and contextual attributes of the media inspected directly from the browser viewport.",
+      "required": [
+        "media_id",
+        "modality",
+        "source",
+        "access_status"
+      ],
+      "properties": {
+        "media_id": {
+          "type": "string",
+          "description": "Deterministic identifier assigned to the DOM media element by FORENSIGHT."
+        },
+        "modality": {
+          "type": "string",
+          "description": "Primary media modality being analyzed.",
+          "enum": [
+            "IMAGE",
+            "VIDEO",
+            "AUDIO"
+          ]
+        },
+        "mime_type": {
+          "type": ["string", "null"],
+          "description": "Observed or declared MIME type (e.g., image/jpeg, video/mp4, audio/mpeg)."
+        },
+        "width": {
+          "type": ["integer", "null"],
+          "description": "Native horizontal resolution in pixels, if applicable.",
+          "minimum": 0
+        },
+        "height": {
+          "type": ["integer", "null"],
+          "description": "Native vertical resolution in pixels, if applicable.",
+          "minimum": 0
+        },
+        "duration_ms": {
+          "type": ["number", "null"],
+          "description": "Media duration in milliseconds, if applicable for temporal media.",
+          "minimum": 0
+        },
+        "source": {
+          "type": "string",
+          "description": "Absolute source URL, origin domain, or data URI of the media item."
+        },
+        "access_status": {
+          "type": "string",
+          "description": "Access state determined during browser media acquisition.",
+          "enum": [
+            "ACCESSIBLE",
+            "RESTRICTED",
+            "CORS_BLOCKED",
+            "DRM_PROTECTED",
+            "OFFLINE"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "forensic_ml": {
+      "type": "object",
+      "description": "Empirical signal processing metrics and probabilistic model inferences from the FORENSIGHT Forensic ML pipeline.",
+      "required": [
+        "available",
+        "model",
+        "probabilities"
+      ],
+      "properties": {
+        "available": {
+          "type": "boolean",
+          "description": "Indicates whether the forensic ML processing engine was executed successfully."
+        },
+        "model": {
+          "type": "string",
+          "description": "Identifier and version of the forensic machine learning model or analytical suite applied."
+        },
+        "probabilities": {
+          "type": "object",
+          "description": "Class probability distribution estimated by the forensic classification layer.",
+          "required": [
+            "real",
+            "manipulated",
+            "ai_generated"
+          ],
+          "properties": {
+            "real": {
+              "type": "number",
+              "minimum": 0.0,
+              "maximum": 1.0,
+              "description": "Calibrated probability of authentic/unmanipulated camera capture."
+            },
+            "manipulated": {
+              "type": "number",
+              "minimum": 0.0,
+              "maximum": 1.0,
+              "description": "Calibrated probability of localized splicing, inpainting, or post-capture tampering."
+            },
+            "ai_generated": {
+              "type": "number",
+              "minimum": 0.0,
+              "maximum": 1.0,
+              "description": "Calibrated probability of full synthetic generation (diffusion, GAN, speech synthesis)."
+            }
+          },
+          "additionalProperties": false
+        },
+        "forensic_features": {
+          "type": "object",
+          "description": "Structured empirical physical and mathematical measurements extracted directly from pixel, spectral, or waveform data. Attributes are optional to accommodate varying media modalities and acquisition conditions.",
+          "properties": {
+            "jpeg": {
+              "type": "object",
+              "description": "Quantization table consistency, DCT coefficient distributions, and double-compression artifacts.",
+              "properties": {
+                "quantization_table_match": { "type": ["string", "null"] },
+                "estimated_quality": { "type": ["integer", "null"], "minimum": 0, "maximum": 100 },
+                "double_compression_detected": { "type": ["boolean", "null"] },
+                "blockiness_8x8_score": { "type": ["number", "null"], "minimum": 0.0 }
+              },
+              "additionalProperties": true
+            },
+            "noise": {
+              "type": "object",
+              "description": "Photo-Response Non-Uniformity (PRNU) and high-frequency residual noise statistics.",
+              "properties": {
+                "residual_variance": { "type": ["number", "null"] },
+                "quadrant_variance_uniformity": { "type": ["number", "null"], "minimum": 0.0, "maximum": 1.0 },
+                "prnu_correlation": { "type": ["number", "null"], "minimum": -1.0, "maximum": 1.0 },
+                "noise_snr_db": { "type": ["number", "null"] }
+              },
+              "additionalProperties": true
+            },
+            "frequency": {
+              "type": "object",
+              "description": "2D Fourier / Discrete Cosine spectral energy distributions.",
+              "properties": {
+                "spectral_rolloff_hz": { "type": ["number", "null"] },
+                "high_frequency_decay_rate": { "type": ["number", "null"] },
+                "azimuthal_average_anomaly": { "type": ["number", "null"] },
+                "grid_peak_energy": { "type": ["number", "null"] }
+              },
+              "additionalProperties": true
+            },
+            "edges": {
+              "type": "object",
+              "description": "Sobel/Canny edge gradient coherence, boundary discontinuities, and seam carving indicators.",
+              "properties": {
+                "gradient_mean": { "type": ["number", "null"] },
+                "gradient_std": { "type": ["number", "null"] },
+                "boundary_discontinuity_index": { "type": ["number", "null"] }
+              },
+              "additionalProperties": true
+            },
+            "texture": {
+              "type": "object",
+              "description": "Spatial entropy, Gray-Level Co-occurrence Matrix (GLCM), and structural smoothness.",
+              "properties": {
+                "shannon_entropy": { "type": ["number", "null"] },
+                "local_binary_pattern_entropy": { "type": ["number", "null"] },
+                "glcm_contrast": { "type": ["number", "null"] }
+              },
+              "additionalProperties": true
+            },
+            "compression": {
+              "type": "object",
+              "description": "Codec-level container parameters and GOP/macroblock metrics.",
+              "properties": {
+                "codec": { "type": ["string", "null"] },
+                "bitrate_kbps": { "type": ["number", "null"] },
+                "macroblock_jitter": { "type": ["number", "null"] },
+                "recompression_count_estimate": { "type": ["integer", "null"] }
+              },
+              "additionalProperties": true
+            },
+            "metadata": {
+              "type": "object",
+              "description": "File header structure, EXIF tags, C2PA content credentials, or software provenance.",
+              "properties": {
+                "has_exif": { "type": ["boolean", "null"] },
+                "software_signature": { "type": ["string", "null"] },
+                "c2pa_manifest_present": { "type": ["boolean", "null"] },
+                "c2pa_signature_valid": { "type": ["boolean", "null"] },
+                "camera_model": { "type": ["string", "null"] }
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "gemini": {
+      "type": "object",
+      "description": "High-level multimodal semantic reasoning, contextual plausibility, and anomaly interpretation produced by Google Gemini.",
+      "required": [
+        "available",
+        "model",
+        "assessment",
+        "observations",
+        "indicators",
+        "limitations"
+      ],
+      "properties": {
+        "available": {
+          "type": "boolean",
+          "description": "Indicates whether Gemini multimodal inspection was successfully invoked."
+        },
+        "model": {
+          "type": "string",
+          "description": "Specific Gemini model identifier deployed (e.g. gemini-1.5-pro, gemini-2.0-flash)."
+        },
+        "assessment": {
+          "type": "string",
+          "description": "High-level contextual assessment generated by Gemini multimodal reasoning.",
+          "enum": [
+            "REAL_LIKELY",
+            "MANIPULATION_LIKELY",
+            "AI_GENERATED_LIKELY",
+            "INCONCLUSIVE"
+          ]
+        },
+        "observations": {
+          "type": "array",
+          "description": "Objective semantic, lighting, physical, or contextual observations noted during inspection.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "indicators": {
+          "type": "array",
+          "description": "Specific physical inconsistencies, anatomical anomalies, or synthesis signatures identified.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "limitations": {
+          "type": "array",
+          "description": "Observational constraints reported by Gemini (e.g., low resolution, occlusion, lack of contextual provenance).",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "fusion": {
+      "type": "object",
+      "description": "Deterministic multi-signal synthesis resolving agreement or tension between Forensic ML measurements and Gemini semantic reasoning.",
+      "required": [
+        "agreement",
+        "conflict",
+        "final_verdict",
+        "status",
+        "reasons"
+      ],
+      "properties": {
+        "agreement": {
+          "type": "boolean",
+          "description": "True if Forensic ML classification and Gemini multimodal assessment point to concordant conclusions."
+        },
+        "conflict": {
+          "type": "boolean",
+          "description": "True if Forensic ML signals contradict Gemini semantic observations (e.g. clean pixels but impossible physical lighting, or heavy compression noise mistaken for generation)."
+        },
+        "final_verdict": {
+          "type": "string",
+          "description": "Consolidated forensic verdict reaching evidentiary threshold.",
+          "enum": [
+            "REAL",
+            "MANIPULATED",
+            "AI_GENERATED",
+            "INCONCLUSIVE"
+          ]
+        },
+        "status": {
+          "type": "string",
+          "description": "Evidentiary state of the consolidated analysis.",
+          "enum": [
+            "SUFFICIENT_EVIDENCE",
+            "CONFLICTING_EVIDENCE",
+            "INSUFFICIENT_EVIDENCE",
+            "ANALYSIS_UNAVAILABLE"
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "description": "Explicit, verifiable rationales justifying the final verdict and explaining any resolved tensions.",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "limitations": {
+      "type": "array",
+      "description": "Global operational or methodological limitations of this bundle (e.g., aggressive social platform re-encoding, low frame count, partial capture).",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false
+}
