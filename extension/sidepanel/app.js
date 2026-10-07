@@ -568,10 +568,12 @@ function normalizeMediaBasename(input) {
   return basename.toLowerCase().trim();
 }
 
-// Deterministic demo rule: photo1.jpg / photo2.jpg (and variants) → MANIPULATED.
+// Deterministic demo rule:
+// 1. test.jpg (grey Google Cloud certificate) → MANIPULATED
+// 2. tampered.jpg (tampered handwritten-signature document) → MANIPULATED
 // Everything else → AUTHENTIC. Click order is irrelevant.
-function isDemoManipulated(mediaItem) {
-  if (!mediaItem) return false;
+function getDemoManipulatedType(mediaItem) {
+  if (!mediaItem) return null;
   const sources = [
     mediaItem.filename,
     mediaItem.src,
@@ -584,11 +586,18 @@ function isDemoManipulated(mediaItem) {
 
   for (const source of sources) {
     const base = normalizeMediaBasename(source);
-    if (base === 'photo1' || base === 'photo2') {
-      return true;
+    if (base === 'test' || base === 'photo1') {
+      return 'test';
+    }
+    if (base === 'tampered' || base === 'photo2') {
+      return 'tampered';
     }
   }
-  return false;
+  return null;
+}
+
+function isDemoManipulated(mediaItem) {
+  return Boolean(getDemoManipulatedType(mediaItem));
 }
 
 // ─── Proven MAIN Demo Result Generator ──────────────────────────
@@ -597,8 +606,9 @@ function generateDemoResult(mediaItem) {
   const mediaType = mediaItem.type === 'video' ? 'video' :
                     mediaItem.type === 'audio' ? 'audio' : 'image';
 
-  // Simple deterministic rule: photo1.jpg / photo2.jpg → MANIPULATED, all else → AUTHENTIC
-  const isManip = isDemoManipulated(mediaItem);
+  // Deterministic demo rule: test.jpg & tampered.jpg → MANIPULATED, all else → AUTHENTIC
+  const manipType = getDemoManipulatedType(mediaItem);
+  const isManip = Boolean(manipType);
 
   const scenario = isManip
     ? { verdictStatus: 'manipulated', verdictScore: 84, verdictLabel: 'Manipulation Likely', evidenceConfidence: 'high' }
@@ -607,6 +617,15 @@ function generateDemoResult(mediaItem) {
   const signals = generateDemoSignals(mediaType, scenario.verdictStatus, hash);
   const activeSignals = signals.filter((s) => s.activated);
   const relationships = generateDemoRelationships(activeSignals, scenario.verdictStatus);
+
+  let explanationSummary = 'All analyzed signals are consistent with authentic, unmanipulated media.';
+  if (manipType === 'test') {
+    explanationSummary = 'The certificate exhibits a visible tonal and color-consistency anomaly compared with the expected document appearance. Combined visual evidence supports the manipulated-media demonstration scenario.';
+  } else if (manipType === 'tampered') {
+    explanationSummary = 'Localized visual characteristics around the handwritten signature are inconsistent with the surrounding document structure. The available evidence supports an altered signature region and a manipulated-media classification.';
+  } else if (isManip) {
+    explanationSummary = 'Multiple independent signals support the manipulation hypothesis. Evidence shows convergence across analytical modules.';
+  }
 
   return {
     id: `FS-${hash.toString(36).toUpperCase().substring(0, 8)}`,
@@ -625,10 +644,8 @@ function generateDemoResult(mediaItem) {
     ] : [],
     suspiciousSegments: (mediaType === 'video' || mediaType === 'audio') ? generateDemoSegments(mediaType, scenario.verdictStatus, hash) : [],
     crossModalSync: mediaType === 'video' ? generateDemoCrossModal(scenario.verdictStatus, hash) : null,
-    explanations: generateDemoExplanations(mediaType, scenario.verdictStatus, hash),
-    explanationSummary: isManip
-      ? 'Multiple independent signals support the manipulation hypothesis. Evidence shows convergence across analytical modules.'
-      : 'All analyzed signals are consistent with authentic, unmanipulated media.',
+    explanations: generateDemoExplanations(mediaType, scenario.verdictStatus, hash, manipType),
+    explanationSummary,
     investigationFlow: generateInvestigationFlow(),
     activatedModules: getActivatedModules(mediaType),
     skippedModules: getSkippedModules(mediaType),
@@ -765,7 +782,7 @@ function generateDemoCrossModal(verdict, hash) {
   };
 }
 
-function generateDemoExplanations(mediaType, verdict, hash) {
+function generateDemoExplanations(mediaType, verdict, hash, manipType) {
   if (verdict === 'manipulated') {
     if (mediaType === 'video') {
       return [
@@ -780,6 +797,20 @@ function generateDemoExplanations(mediaType, verdict, hash) {
         { rank: 1, title: 'Synthesis artifacts detected', strength: 'strong', direction: 'supporting', description: 'Spectral patterns consistent with TTS or voice-cloning systems.' },
         { rank: 2, title: 'Prosodic anomalies', strength: 'strong', direction: 'supporting', description: 'Pitch contour and rhythm patterns deviate from natural speech.' },
         { rank: 3, title: 'Temporal discontinuity', strength: 'moderate', direction: 'supporting', description: 'Waveform shows segment boundaries with unnatural transitions.' },
+      ];
+    }
+    if (manipType === 'test') {
+      return [
+        { rank: 1, title: 'Tonal consistency anomaly', strength: 'strong', direction: 'supporting', description: 'Noticeable color tone and background luminance shift across the certificate surface.' },
+        { rank: 2, title: 'Frequency domain variation', strength: 'strong', direction: 'supporting', description: 'Spectral analysis exhibits distribution characteristics atypical of standard digital certificates.' },
+        { rank: 3, title: 'Multiple altered-media indicators', strength: 'moderate', direction: 'supporting', description: 'Combined visual evidence supports the manipulated-media demonstration scenario.' },
+      ];
+    }
+    if (manipType === 'tampered') {
+      return [
+        { rank: 1, title: 'Signature boundary anomaly', strength: 'strong', direction: 'supporting', description: 'Localized visual characteristics around the handwritten signature show boundary discontinuities with the surrounding paper texture.' },
+        { rank: 2, title: 'Sensor noise discontinuity', strength: 'strong', direction: 'supporting', description: 'Residual sensor noise profile around signature differs from page background.' },
+        { rank: 3, title: 'Evidence supports altered signature', strength: 'moderate', direction: 'supporting', description: 'The available evidence supports an altered signature region and a manipulated-media classification.' },
       ];
     }
     return [
